@@ -45,10 +45,6 @@ self: super: rec {
 
   mesa_git = withNativeStdenv super.mesa_git;
 
-  proton-cachyos-native = super.callPackage ./../pkgs/proton-cachyos.nix {
-    patches = [ ./LinUwUx.patch ];
-  };
-
   noctalia-native = (inputs.noctalia.packages.${super.stdenv.hostPlatform.system}.default).overrideAttrs (oldAttrs: {
     env = (oldAttrs.env or {}) // {
       NIX_CFLAGS_COMPILE   = (oldAttrs.env.NIX_CFLAGS_COMPILE or "")   + "-O3 -march=native -mtune=native";
