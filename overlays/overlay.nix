@@ -32,9 +32,9 @@ self: super: rec {
   #
   # this version of `libdisplay-info` was removed from nixpkgs, but
   # the `niri-flake` flake depends on it still
-  libdisplay-info_0_2 = prev.libdisplay-info.overrideAttrs {
+  libdisplay-info_0_2 = super.libdisplay-info.overrideAttrs {
     version = "0.2.0";
-    src = prev.fetchFromGitLab {
+    src = super.fetchFromGitLab {
       domain = "gitlab.freedesktop.org";
       owner = "emersion";
       repo = "libdisplay-info";
