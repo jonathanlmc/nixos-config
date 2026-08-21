@@ -1,0 +1,503 @@
+From ea10a7400231b8162d30690528d8c9119bb6d4f8 Mon Sep 17 00:00:00 2001
+From: Jonathan M <jgit@tuta.io>
+Date: Thu, 20 Aug 2026 16:22:11 -0700
+Subject: [PATCH 3/3] tab: rotating video thumbnails
+
+---
+ src/mounter/gvfs.rs |   3 +-
+ src/tab.rs          | 312 +++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 296 insertions(+), 19 deletions(-)
+
+diff --git a/src/mounter/gvfs.rs b/src/mounter/gvfs.rs
+index 1b7af76..15edd29 100644
+--- a/src/mounter/gvfs.rs
++++ b/src/mounter/gvfs.rs
+@@ -4,7 +4,7 @@ use cosmic::{Task, widget};
+ use gio::glib;
+ use gio::prelude::*;
+ use std::any::TypeId;
+-use std::cell::Cell;
++use std::cell::{Cell, RefCell};
+ use std::future::pending;
+ use std::hash::Hash;
+ use std::path::PathBuf;
+@@ -207,6 +207,7 @@ fn network_scan(uri: &str, sizes: IconSizes) -> Result<Vec<tab::Item>, String> {
+             icon_handle_list,
+             icon_handle_list_condensed,
+             thumbnail_opt: Some(ItemThumbnail::NotImage),
++            video_scrub_frames: RefCell::new([None, None, None, None, None]),
+             button_id: widget::Id::unique(),
+             pos_opt: Cell::new(None),
+             rect_opt: Cell::new(None),
+diff --git a/src/tab.rs b/src/tab.rs
+index c41c2fe..00b9873 100644
+--- a/src/tab.rs
++++ b/src/tab.rs
+@@ -30,7 +30,7 @@ use rustc_hash::FxHashMap;
+ use serde::{Deserialize, Serialize};
+ use sha2::{Digest, Sha256};
+ use std::borrow::Cow;
+-use std::cell::Cell;
++use std::cell::{Cell, RefCell};
+ use std::cmp::{Ordering, Reverse};
+ use std::collections::{BTreeMap, BTreeSet, HashMap};
+ use std::error::Error;
+@@ -82,6 +82,17 @@ const TEXT_PREVIEW_MAX_BYTES: usize = 256 * 1024; // 256 KiB
+ /// Maximum file size (bytes) to attempt text preview; files larger than this are skipped entirely.
+ const TEXT_PREVIEW_MAX_FILE_BYTES: u64 = 8 * 1000 * 1000; // 8 MiB
+ 
++/// Points in a video's duration (as a fraction, 0.0-1.0) sampled for the hover-scrub grid
++/// thumbnail - the midpoint of each successive 20% segment.
++#[cfg(feature = "video-thumbnails")]
++const VIDEO_SCRUB_FRACTIONS: [f64; 5] = [0.1, 0.3, 0.5, 0.7, 0.9];
++/// Index into `VIDEO_SCRUB_FRACTIONS`/`Item::video_scrub_frames` for the 50% frame, which is
++/// already decoded as the item's static thumbnail and can be reused instead of redecoded.
++const VIDEO_SCRUB_MIDDLE_INDEX: usize = 2;
++/// How long each rotating scrub frame is shown before advancing to the next one.
++#[cfg(feature = "video-thumbnails")]
++const VIDEO_SCRUB_TICK: Duration = Duration::from_millis(900);
++
+ // Thumbnail generation semaphore - limits parallel thumbnail workers
+ // Uses 4 workers for balanced throughput and memory usage
+ pub static THUMB_SEMAPHORE: LazyLock<tokio::sync::Semaphore> =
+@@ -729,6 +740,7 @@ pub fn item_from_gvfs_info(path: PathBuf, file_info: gio::FileInfo, sizes: IconS
+         // subscription in `Tab::subscription`, which skips items whose thumbnail_opt
+         // is already set - so leave it unset here to allow previews on network drives.
+         thumbnail_opt: None,
++        video_scrub_frames: RefCell::new([None, None, None, None, None]),
+         button_id: widget::Id::unique(),
+         pos_opt: Cell::new(None),
+         rect_opt: Cell::new(None),
+@@ -864,6 +876,7 @@ pub fn item_from_entry(
+         // subscription in `Tab::subscription`, which skips items whose thumbnail_opt
+         // is already set - so leave it unset here to allow previews on network drives.
+         thumbnail_opt: None,
++        video_scrub_frames: RefCell::new([None, None, None, None, None]),
+         button_id: widget::Id::unique(),
+         pos_opt: Cell::new(None),
+         rect_opt: Cell::new(None),
+@@ -923,6 +936,7 @@ pub fn item_from_trash_entry(
+         icon_handle_list,
+         icon_handle_list_condensed,
+         thumbnail_opt: Some(ItemThumbnail::NotImage),
++        video_scrub_frames: RefCell::new([None, None, None, None, None]),
+         button_id: widget::Id::unique(),
+         pos_opt: Cell::new(None),
+         rect_opt: Cell::new(None),
+@@ -1390,6 +1404,7 @@ pub fn scan_desktop(
+             icon_handle_list,
+             icon_handle_list_condensed,
+             thumbnail_opt: Some(ItemThumbnail::NotImage),
++            video_scrub_frames: RefCell::new([None, None, None, None, None]),
+             button_id: widget::Id::unique(),
+             pos_opt: Cell::new(None),
+             rect_opt: Cell::new(None),
+@@ -1819,6 +1834,10 @@ pub enum Message {
+     ZoomOut,
+     HighlightDeactivate(usize),
+     HighlightActivate(usize),
++    VideoScrubStart(usize),
++    VideoScrubStop(usize),
++    VideoScrubFrame(PathBuf, usize, Option<widget::icon::Handle>),
++    VideoScrubTick,
+     DirectorySize(PathBuf, DirSize),
+     Checksums(PathBuf, ChecksumState),
+     CalculateChecksums(PathBuf),
+@@ -2341,11 +2360,18 @@ impl ItemThumbnail {
+         None
+     }
+ 
+-    /// Extracts the frame at the midpoint of the video's duration by decoding directly
+-    /// with libav (via `ffmpeg-next`), rather than shelling out to the `ffmpeg` binary.
+-    /// Returns `None` on any failure (unsupported format, no video stream, decode error).
++    /// Extracts the frame at the midpoint of the video's duration. See [`Self::video_frame_at`].
+     #[cfg(feature = "video-thumbnails")]
+     fn video_middle_frame(path: &Path) -> Option<DynamicImage> {
++        Self::video_frame_at(path, 0.5)
++    }
++
++    /// Extracts the frame at `fraction` (0.0 = start, 1.0 = end) of the video's duration,
++    /// by decoding directly with libav (via `ffmpeg-next`) rather than shelling out to the
++    /// `ffmpeg` binary. Returns `None` on any failure (unsupported format, no video stream,
++    /// decode error, or a seek target past the last decodable frame).
++    #[cfg(feature = "video-thumbnails")]
++    fn video_frame_at(path: &Path, fraction: f64) -> Option<DynamicImage> {
+         use ffmpeg_next as ffmpeg;
+ 
+         // Safe to call repeatedly; only sets up libav's internal state once.
+@@ -2364,6 +2390,7 @@ impl ItemThumbnail {
+ 
+         let video_stream = input.streams().best(ffmpeg::media::Type::Video)?;
+         let video_stream_index = video_stream.index();
++        let stream_time_base = f64::from(video_stream.time_base());
+         let mut decoder =
+             match ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())
+                 .and_then(|context| context.decoder().video())
+@@ -2379,20 +2406,32 @@ impl ItemThumbnail {
+                 }
+             };
+ 
+-        // Seek to the midpoint of the container's duration (AV_TIME_BASE units).
+-        // This is a best-effort, keyframe-based seek, same as `ffmpeg -ss`; if the
+-        // duration is unknown, fall back to decoding from the start of the file.
++        // Seek to `fraction` of the container's duration (AV_TIME_BASE units). This is a
++        // best-effort, keyframe-based seek - it only guarantees landing at or before the
++        // nearest preceding keyframe, which for a long GOP can be well short of the target.
++        // If the duration is unknown, fall back to decoding from the start of the file.
+         let duration = input.duration();
++        let target_secs = fraction.clamp(0.0, 1.0) * (duration.max(0) as f64 / 1_000_000.0);
+         if duration > 0 {
+-            let target = duration / 2;
+-            if let Err(err) = input.seek(target, ..) {
+-                log::debug!("failed to seek {} to midpoint: {}", path.display(), err);
++            let seek_target = (target_secs * 1_000_000.0) as i64;
++            if let Err(err) = input.seek(seek_target, ..) {
++                log::debug!(
++                    "failed to seek {} to {:.0}%: {}",
++                    path.display(),
++                    fraction * 100.0,
++                    err
++                );
+             }
+         }
+ 
++        // Decode forward from the keyframe the seek landed on until a frame's own
++        // timestamp reaches the target, converting each candidate frame as we go (frame
++        // buffers aren't cheaply cloneable, so the converted image itself is what carries
++        // the "best so far" result if EOF is hit first).
+         let mut scaler: Option<ffmpeg::software::scaling::Context> = None;
+         let mut decoded = ffmpeg::frame::Video::empty();
+-        for (stream, packet) in input.packets() {
++        let mut result: Option<DynamicImage> = None;
++        'search: for (stream, packet) in input.packets() {
+             if stream.index() != video_stream_index || decoder.send_packet(&packet).is_err() {
+                 continue;
+             }
+@@ -2430,7 +2469,7 @@ impl ItemThumbnail {
+                 let mut rgba = ffmpeg::frame::Video::empty();
+                 if let Err(err) = ctx.run(&decoded, &mut rgba) {
+                     log::warn!("failed to scale frame from {}: {}", path.display(), err);
+-                    return None;
++                    break 'search;
+                 }
+ 
+                 // The scaled frame's rows may be padded to a stride wider than the
+@@ -2444,12 +2483,19 @@ impl ItemThumbnail {
+                     buf.extend_from_slice(&data[start..start + row_bytes]);
+                 }
+ 
+-                return image::RgbaImage::from_raw(width, height, buf)
+-                    .map(DynamicImage::ImageRgba8);
++                result = image::RgbaImage::from_raw(width, height, buf).map(DynamicImage::ImageRgba8);
++
++                let pts_secs = decoded
++                    .pts()
++                    .map(|pts| pts as f64 * stream_time_base)
++                    .unwrap_or(0.0);
++                if pts_secs >= target_secs {
++                    break 'search;
++                }
+             }
+         }
+ 
+-        None
++        result
+     }
+ }
+ 
+@@ -2467,6 +2513,9 @@ pub struct Item {
+     pub icon_handle_list: widget::icon::Handle,
+     pub icon_handle_list_condensed: widget::icon::Handle,
+     pub thumbnail_opt: Option<ItemThumbnail>,
++    /// Rotating grid-view hover thumbnails for videos, one slot per `VIDEO_SCRUB_FRACTIONS`
++    /// entry, filled in lazily (and only on hover) as each frame is decoded.
++    pub video_scrub_frames: RefCell<[Option<widget::icon::Handle>; 5]>,
+     pub button_id: widget::Id,
+     pub pos_opt: Cell<Option<(usize, usize)>>,
+     pub rect_opt: Cell<Option<Rectangle>>,
+@@ -2960,6 +3009,12 @@ pub struct Tab {
+     pub(crate) parent_item_opt: Option<Box<Item>>,
+     pub(crate) items_opt: Option<Vec<Item>>,
+     pub dnd_hovered: Option<(Location, Instant)>,
++    /// Path of the video item currently hovered in grid view, if its rotating scrub
++    /// thumbnail is active.
++    pub(crate) video_scrub_target: Option<PathBuf>,
++    /// Advances on each `Message::VideoScrubTick`; selects which decoded frame of the
++    /// active `video_scrub_target` item is currently displayed.
++    pub(crate) video_scrub_tick: usize,
+     pub(crate) scrollable_id: widget::Id,
+     select_focus: Option<usize>,
+     select_range: Option<(usize, usize)>,
+@@ -3111,6 +3166,8 @@ impl Tab {
+             select_range: None,
+             clicked: None,
+             dnd_hovered: None,
++            video_scrub_target: None,
++            video_scrub_tick: 0,
+             selected_clicked: false,
+             last_right_click: None,
+             search_context: None,
+@@ -4632,6 +4689,49 @@ impl Tab {
+                     item.highlighted = true;
+                 }
+             }
++            Message::VideoScrubStart(i) => {
++                self.watch_drag = true;
++                self.video_scrub_target = None;
++                if let Some(item) = self.items_opt.as_mut().and_then(|f| f.get_mut(i)) {
++                    item.highlighted = true;
++                    if item.mime.type_() == mime::VIDEO
++                        && let Some(path) = item.path_opt().cloned()
++                    {
++                        self.video_scrub_target = Some(path);
++                        self.video_scrub_tick = 0;
++                        // The 50% frame is already decoded as the static grid thumbnail
++                        // (when thumbnailing succeeded) - reuse it instead of redecoding.
++                        if matches!(item.thumbnail_opt, Some(ItemThumbnail::Image(..))) {
++                            let mut frames = item.video_scrub_frames.borrow_mut();
++                            if frames[VIDEO_SCRUB_MIDDLE_INDEX].is_none() {
++                                frames[VIDEO_SCRUB_MIDDLE_INDEX] = Some(item.icon_handle_grid.clone());
++                            }
++                        }
++                    }
++                }
++            }
++            Message::VideoScrubStop(i) => {
++                self.watch_drag = true;
++                if let Some(item) = self.items_opt.as_mut().and_then(|f| f.get_mut(i)) {
++                    item.highlighted = false;
++                }
++                self.video_scrub_target = None;
++            }
++            Message::VideoScrubFrame(path, idx, handle_opt) => {
++                if let Some(items) = &mut self.items_opt {
++                    let location = Location::Path(path);
++                    if let Some(item) = items
++                        .iter_mut()
++                        .find(|item| item.location_opt.as_ref() == Some(&location))
++                        && let Some(handle) = handle_opt
++                    {
++                        item.video_scrub_frames.borrow_mut()[idx] = Some(handle);
++                    }
++                }
++            }
++            Message::VideoScrubTick => {
++                self.video_scrub_tick = self.video_scrub_tick.wrapping_add(1);
++            }
+             Message::Resize(viewport) => {
+                 // Scroll to ensure focused item still in view
+                 if self.viewport_opt.map(|v| v.size()) != Some(viewport.size())
+@@ -5954,10 +6054,28 @@ impl Tab {
+ 
+                 // Only build elements if visible (for performance)
+                 if item_rect.intersects(&visible_rect) {
++                    // While this item is the active hover-scrub target, cycle through
++                    // whichever of its decoded scrub frames are ready so far instead of
++                    // the static thumbnail.
++                    let grid_icon_handle = if self.video_scrub_target.as_deref()
++                        == item.path_opt().map(PathBuf::as_path)
++                    {
++                        let frames = item.video_scrub_frames.borrow();
++                        let available: Vec<&widget::icon::Handle> =
++                            frames.iter().flatten().collect();
++                        if available.is_empty() {
++                            item.icon_handle_grid.clone()
++                        } else {
++                            available[self.video_scrub_tick % available.len()].clone()
++                        }
++                    } else {
++                        item.icon_handle_grid.clone()
++                    };
++
+                     //TODO: one focus group per grid item (needs custom widget)
+                     let buttons: Vec<Element<Message>> = vec![
+                         widget::button::custom(
+-                            widget::icon::icon(item.icon_handle_grid.clone())
++                            widget::icon::icon(grid_icon_handle)
+                                 .content_fit(ContentFit::Contain)
+                                 .size(icon_sizes.grid()),
+                         )
+@@ -6027,8 +6145,8 @@ impl Tab {
+                         .on_double_click(move |_| Message::DoubleClick(Some(i)))
+                         .on_release(move |_| Message::ClickRelease(Some(i)))
+                         .on_middle_press(move |_| Message::MiddleClick(i))
+-                        .on_enter(move || Message::HighlightActivate(i))
+-                        .on_exit(move || Message::HighlightDeactivate(i));
++                        .on_enter(move || Message::VideoScrubStart(i))
++                        .on_exit(move || Message::VideoScrubStop(i));
+                     grid_elements[row].push(Element::from(mouse_area));
+                 } else {
+                     // Add a spacer if the row is empty, so scroll works
+@@ -7326,6 +7444,118 @@ impl Tab {
+                     }
+                 }
+             }
++
++            // Rotating video thumbnails (grid view only): decode the still-missing
++            // VIDEO_SCRUB_FRACTIONS frames for the currently hovered video, and once at
++            // least one is ready, cycle through them on a timer.
++            #[cfg(feature = "video-thumbnails")]
++            if let Some(target_path) = &self.video_scrub_target
++                && let Some(item) = items
++                    .iter()
++                    .find(|item| item.path_opt().map(PathBuf::as_path) == Some(target_path))
++            {
++                for (idx, &fraction) in VIDEO_SCRUB_FRACTIONS.iter().enumerate() {
++                    if item.video_scrub_frames.borrow()[idx].is_some() {
++                        continue;
++                    }
++
++                    #[derive(Clone)]
++                    struct Wrapper {
++                        path: PathBuf,
++                        idx: usize,
++                        fraction: f64,
++                    }
++                    impl Hash for Wrapper {
++                        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
++                            self.path.hash(state);
++                            self.idx.hash(state);
++                        }
++                    }
++
++                    subscriptions.push(Subscription::run_with(
++                        Wrapper {
++                            path: target_path.clone(),
++                            idx,
++                            fraction,
++                        },
++                        |wrapper| {
++                            let Wrapper { path, idx, fraction } = wrapper.clone();
++                            stream::channel(
++                                1,
++                                move |mut output: futures::channel::mpsc::Sender<_>| async move {
++                                    let message = {
++                                        let path = path.clone();
++                                        let _permit = THUMB_SEMAPHORE.acquire().await.unwrap();
++                                        tokio::task::spawn_blocking(move || {
++                                            let handle_opt =
++                                                ItemThumbnail::video_frame_at(&path, fraction).map(
++                                                    |image| {
++                                                        let scaled = image
++                                                            .thumbnail(THUMBNAIL_SIZE, THUMBNAIL_SIZE)
++                                                            .into_rgba8();
++                                                        widget::icon::Handle {
++                                                            symbolic: false,
++                                                            data: widget::icon::Data::Image(
++                                                                widget::image::Handle::from_rgba(
++                                                                    scaled.width(),
++                                                                    scaled.height(),
++                                                                    scaled.into_raw(),
++                                                                ),
++                                                            ),
++                                                        }
++                                                    },
++                                                );
++                                            Message::VideoScrubFrame(path, idx, handle_opt)
++                                        })
++                                        .await
++                                        .unwrap()
++                                    };
++
++                                    match output.send(message).await {
++                                        Ok(()) => {}
++                                        Err(err) => {
++                                            log::warn!(
++                                                "failed to send video scrub frame {} for {}: {}",
++                                                idx,
++                                                path.display(),
++                                                err
++                                            );
++                                        }
++                                    }
++
++                                    std::future::pending().await
++                                },
++                            )
++                        },
++                    ));
++                }
++
++                if item.video_scrub_frames.borrow().iter().any(Option::is_some) {
++                    #[derive(Clone, Hash)]
++                    struct TickWrapper {
++                        path: PathBuf,
++                    }
++                    subscriptions.push(Subscription::run_with(
++                        TickWrapper {
++                            path: target_path.clone(),
++                        },
++                        |wrapper| {
++                            let _ = wrapper.clone();
++                            stream::channel(
++                                1,
++                                move |mut output: futures::channel::mpsc::Sender<_>| async move {
++                                    loop {
++                                        tokio::time::sleep(VIDEO_SCRUB_TICK).await;
++                                        if output.send(Message::VideoScrubTick).await.is_err() {
++                                            break;
++                                        }
++                                    }
++                                },
++                            )
++                        },
++                    ));
++                }
++            }
+         }
+ 
+         // Load search items incrementally
+@@ -8150,4 +8380,50 @@ mod tests {
+         }
+         Ok(())
+     }
++
++    #[cfg(feature = "video-thumbnails")]
++    #[test]
++    fn item_thumbnail_video_scrub_frames_differ_across_video() -> io::Result<()> {
++        if std::process::Command::new("ffmpeg")
++            .arg("-version")
++            .output()
++            .is_err()
++        {
++            eprintln!("skipping test: ffmpeg binary not installed");
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        let path = dir.path().join("test.mp4");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=10:size=64x48:rate=10",
++                "-c:v",
++                "libx264",
++                "-pix_fmt",
++                "yuv420p",
++                "-y",
++            ])
++            .arg(&path)
++            .status()?;
++        assert!(status.success(), "failed to generate test video");
++
++        // VIDEO_SCRUB_FRACTIONS samples the 10%/30%/50%/70%/90% marks; check the two
++        // extremes decode to valid, differently-timestamped frames of the same size.
++        let frame_10 = ItemThumbnail::video_frame_at(&path, 0.1).expect("expected frame at 10%");
++        let frame_90 = ItemThumbnail::video_frame_at(&path, 0.9).expect("expected frame at 90%");
++        assert_eq!((frame_10.width(), frame_10.height()), (64, 48));
++        assert_eq!((frame_90.width(), frame_90.height()), (64, 48));
++        assert_ne!(
++            frame_10.to_rgba8().into_raw(),
++            frame_90.to_rgba8().into_raw(),
++            "frames at 10% and 90% of a 10s video should not be pixel-identical"
++        );
++        Ok(())
++    }
+ }
+-- 
+2.55.0
+

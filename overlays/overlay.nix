@@ -43,6 +43,25 @@ self: super: rec {
     };
   };
 
+  cosmic-files = super.cosmic-files.overrideAttrs (oldAttrs:
+    let
+      cosmicFilesPatches = [
+        ./patches/cosmic-files/0001-tab-enable-thumbnails-for-remote-drives.patch
+        ./patches/cosmic-files/0002-tab-video-thumbnails.patch
+        ./patches/cosmic-files/0003-tab-rotating-video-thumbnails.patch
+      ];
+    in
+    {
+      patches = (oldAttrs.patches or [ ]) ++ cosmicFilesPatches;
+      buildInputs = (oldAttrs.buildInputs or [ ]) ++ [ super.ffmpeg ];
+
+      cargoDeps = super.rustPlatform.fetchCargoVendor {
+        inherit (oldAttrs) pname version src;
+        patches = cosmicFilesPatches;
+        hash = "sha256-Y2wIjGNBHVrJ4GVkcKP1Jp07fLqVeFfL8HitMoC7o0A=";
+      };
+  });
+
   mesa_git = withNativeStdenv super.mesa_git;
 
   noctalia-native = (inputs.noctalia.packages.${super.stdenv.hostPlatform.system}.default).overrideAttrs (oldAttrs: {

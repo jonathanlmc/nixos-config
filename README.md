@@ -1,1 +1,38 @@
 Personal system configuration for [NixOS](https://nixos.org).
+
+## Custom Patches For `cosmic-files`
+
+There's a certified slop™[^1] patch set for `cosmic-files` 1.5 / 1.6 [here](./overlays/patches/cosmic-files) with the following changes / features:
+
+* Enable thumbnail generation for remote drives.
+* Add static video thumbnail generation, and animated thumbnail generation for the grid view.
+
+You can apply all of the patches in your own overlay like so:
+
+```nix
+cosmic-files = super.cosmic-files.overrideAttrs (oldAttrs:
+  let
+    cosmicFilesPatches = [
+      # can be applied independently
+      ./patches/cosmic-files/0001-tab-enable-thumbnails-for-remote-drives.patch
+
+      # can be applied indepedently
+      ./patches/cosmic-files/0002-tab-video-thumbnails.patch
+      # requires the above patch
+      ./patches/cosmic-files/0003-tab-rotating-video-thumbnails.patch
+    ];
+  in
+  {
+    patches = (oldAttrs.patches or [ ]) ++ cosmicFilesPatches;
+    buildInputs = (oldAttrs.buildInputs or [ ]) ++ [ super.ffmpeg ];
+
+    cargoDeps = super.rustPlatform.fetchCargoVendor {
+      inherit (oldAttrs) pname version src;
+      patches = cosmicFilesPatches;
+      // replace hash after first rebuild attempt
+      hash = super.lib.fakeHash;
+    };
+});
+```
+
+[^1]: All of the patches were created entirely by a LLM, since I did not want to spend a lot of time on them. The code has been manually reviewed, and the quality is okay-ish.
