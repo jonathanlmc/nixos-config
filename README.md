@@ -16,7 +16,7 @@ cosmic-files = super.cosmic-files.overrideAttrs (oldAttrs:
       # can be applied independently
       ./patches/cosmic-files/0001-tab-enable-thumbnails-for-remote-drives.patch
 
-      # can be applied indepedently
+      # can be applied independently
       ./patches/cosmic-files/0002-tab-video-thumbnails.patch
       # requires the above patch
       ./patches/cosmic-files/0003-tab-rotating-video-thumbnails.patch
