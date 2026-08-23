@@ -21,6 +21,12 @@ self: super: rec {
     '';
   });
 
+  claude-desktop = super.claude-desktop.overrideAttrs (oldAttrs: {
+    installPhase = (oldAttrs.installPhase or "") + ''
+      wrapProgram $out/bin/claude-desktop --add-flags "--force-device-scale-factor=1"
+    '';
+  });
+
   niri-unstable = super.niri-unstable.overrideAttrs (oldAttrs: {
     env = (oldAttrs.env or {}) // {
       RUSTFLAGS = (oldAttrs.env.RUSTFLAGS or "")
