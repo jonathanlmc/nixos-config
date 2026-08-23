@@ -59,7 +59,7 @@ self: super: rec {
       cargoDeps = super.rustPlatform.fetchCargoVendor {
         inherit (oldAttrs) pname version src;
         patches = cosmicFilesPatches;
-        hash = "sha256-Y2wIjGNBHVrJ4GVkcKP1Jp07fLqVeFfL8HitMoC7o0A=";
+        hash = "sha256-l8ZM/AR8iwpVkk0A2uAmdR2huam5FcXQORGUzBbvxJ4=";
       };
   });
 
