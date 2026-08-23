@@ -68,6 +68,14 @@
     scx.enable = true;
   };
 
+  # niri doesn't pass palette info the way a DE would, so qt apps fall
+  # back to a light default; qt6ct lets us set one directly
+  qt = {
+    enable = true;
+    platformTheme = "qt5ct";
+    style = "adwaita-dark";
+  };
+
   # niri is wlroots-based, so xdg-desktop-portal-wlr covers screenshots/screen-sharing
   # xdg-desktop-portal-gtk covers file pickers etc, kept for flatpak
   xdg.portal = {
