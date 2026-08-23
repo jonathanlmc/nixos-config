@@ -1,13 +1,13 @@
-From 0fccd3b7282b10eefbfa8b29af8dd5cd77aceb94 Mon Sep 17 00:00:00 2001
+From eefd0525b1055aaa0f45b36e31336928851d72a2 Mon Sep 17 00:00:00 2001
 From: Jonathan M <jgit@tuta.io>
 Date: Thu, 20 Aug 2026 15:19:23 -0700
-Subject: [PATCH 2/2] tab: video thumbnails
+Subject: [PATCH 2/4] tab: video thumbnails
 
 ---
- Cargo.lock |  81 +++++++++++++++++++-
+ Cargo.lock |  81 ++++++++++++++++-
  Cargo.toml |   7 ++
- src/tab.rs | 214 +++++++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 301 insertions(+), 1 deletion(-)
+ src/tab.rs | 262 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 349 insertions(+), 1 deletion(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
 index a463d07..e8cc65e 100644
@@ -183,7 +183,7 @@ index 68002b9..4ef2462 100644
  wgpu = ["libcosmic/wgpu"]
  
 diff --git a/src/tab.rs b/src/tab.rs
-index 1d8cd2a..c41c2fe 100644
+index 1d8cd2a..351c6c5 100644
 --- a/src/tab.rs
 +++ b/src/tab.rs
 @@ -2120,6 +2120,52 @@ impl ItemThumbnail {
@@ -239,16 +239,57 @@ index 1d8cd2a..c41c2fe 100644
          // Try external thumbnailers.
          let thumbnail_dir = thumbnail_cacher
              .as_ref()
-@@ -2294,6 +2340,117 @@ impl ItemThumbnail {
+@@ -2294,6 +2340,165 @@ impl ItemThumbnail {
  
          None
      }
 +
-+    /// Extracts the frame at the midpoint of the video's duration by decoding directly
-+    /// with libav (via `ffmpeg-next`), rather than shelling out to the `ffmpeg` binary.
-+    /// Returns `None` on any failure (unsupported format, no video stream, decode error).
++    /// Extracts a frame near the midpoint of the video's duration (see [`Self::video_frame_at`]
++    /// for how close), or the first frame if the container doesn't support fast seeking (see
++    /// [`Self::format_supports_fast_seek`]) - for those formats a seek to an arbitrary
++    /// timestamp is either unsupported or only a rough, best-effort guess, so seeking towards
++    /// the midpoint isn't reliable at all.
 +    #[cfg(feature = "video-thumbnails")]
 +    fn video_middle_frame(path: &Path) -> Option<DynamicImage> {
++        let fraction = if Self::format_supports_fast_seek(path) {
++            0.5
++        } else {
++            0.0
++        };
++        Self::video_frame_at(path, fraction)
++    }
++
++    /// Whether `path`'s container format supports fast, index-based seeking to an arbitrary
++    /// timestamp. Determined from the `AVFMT_NOBINSEARCH`/`AVFMT_NOGENSEARCH` flags on the
++    /// probed input format: when both are set (e.g. ASF/WMV), ffmpeg's generic seek fallbacks
++    /// are disabled, meaning the demuxer either has no seek support or only a coarse,
++    /// non-frame-accurate one of its own - the common containers (MP4, Matroska/WebM, AVI,
++    /// MPEG-TS, etc.) all leave these flags unset.
++    #[cfg(feature = "video-thumbnails")]
++    fn format_supports_fast_seek(path: &Path) -> bool {
++        use ffmpeg_next as ffmpeg;
++
++        let Ok(input) = ffmpeg::format::input(path) else {
++            return false;
++        };
++
++        let flags = ffmpeg::format::flag::Flags::from_bits_truncate(unsafe {
++            (*input.format().as_ptr()).flags
++        });
++        !flags.contains(
++            ffmpeg::format::flag::Flags::NO_BINSEARCH | ffmpeg::format::flag::Flags::NO_GENSEARCH,
++        )
++    }
++
++    /// Extracts the frame nearest `fraction` (0.0 = start, 1.0 = end) of the video's duration,
++    /// by decoding directly with libav (via `ffmpeg-next`) rather than shelling out to the
++    /// `ffmpeg` binary. Only ever decodes a single frame - the one the seek lands on/near, i.e.
++    /// the nearest keyframe at or before the target - rather than decoding forward to the exact
++    /// timestamp, so the result can be up to one keyframe-interval short of the true target.
++    /// Returns `None` on any failure (unsupported format, no video stream, decode error, or a
++    /// seek target past the last decodable frame).
++    #[cfg(feature = "video-thumbnails")]
++    fn video_frame_at(path: &Path, fraction: f64) -> Option<DynamicImage> {
 +        use ffmpeg_next as ffmpeg;
 +
 +        // Safe to call repeatedly; only sets up libav's internal state once.
@@ -282,82 +323,89 @@ index 1d8cd2a..c41c2fe 100644
 +                }
 +            };
 +
-+        // Seek to the midpoint of the container's duration (AV_TIME_BASE units).
-+        // This is a best-effort, keyframe-based seek, same as `ffmpeg -ss`; if the
-+        // duration is unknown, fall back to decoding from the start of the file.
++        // Seek to `fraction` of the container's duration (AV_TIME_BASE units). This only
++        // guarantees landing at or before the nearest preceding keyframe - it never lands
++        // exactly on an arbitrary target, since every frame between keyframes is coded as a
++        // delta against other frames and so can't be produced without decoding the whole
++        // reference chain back to a keyframe. If the duration is unknown, fall back to
++        // decoding from the start of the file.
 +        let duration = input.duration();
++        let target_secs = fraction.clamp(0.0, 1.0) * (duration.max(0) as f64 / 1_000_000.0);
 +        if duration > 0 {
-+            let target = duration / 2;
-+            if let Err(err) = input.seek(target, ..) {
-+                log::debug!("failed to seek {} to midpoint: {}", path.display(), err);
++            let seek_target = (target_secs * 1_000_000.0) as i64;
++            if let Err(err) = input.seek(seek_target, ..) {
++                log::debug!(
++                    "failed to seek {} to {:.0}%: {}",
++                    path.display(),
++                    fraction * 100.0,
++                    err
++                );
 +            }
 +        }
 +
-+        let mut scaler: Option<ffmpeg::software::scaling::Context> = None;
++        // Rather than paying to decode forward to the exact target timestamp (arbitrarily
++        // expensive for a container with sparse keyframes), just take the first frame the
++        // seek lands on/near. That's always the nearest preceding keyframe, which is a good
++        // enough approximation of `fraction` for a thumbnail, and bounds every extraction to
++        // exactly one frame decode regardless of the container's keyframe interval.
 +        let mut decoded = ffmpeg::frame::Video::empty();
-+        for (stream, packet) in input.packets() {
++        let mut found = false;
++        'search: for (stream, packet) in input.packets() {
 +            if stream.index() != video_stream_index || decoder.send_packet(&packet).is_err() {
 +                continue;
 +            }
 +
 +            while decoder.receive_frame(&mut decoded).is_ok() {
-+                let (width, height) = (decoded.width(), decoded.height());
-+                if width == 0 || height == 0 {
++                if decoded.width() == 0 || decoded.height() == 0 {
 +                    continue;
 +                }
-+
-+                let ctx = match &mut scaler {
-+                    Some(ctx) => ctx,
-+                    None => {
-+                        let ctx = ffmpeg::software::scaling::Context::get(
-+                            decoded.format(),
-+                            width,
-+                            height,
-+                            ffmpeg::format::Pixel::RGBA,
-+                            width,
-+                            height,
-+                            ffmpeg::software::scaling::Flags::BILINEAR,
-+                        )
-+                        .inspect_err(|err| {
-+                            log::warn!(
-+                                "failed to create scaler for {}: {}",
-+                                path.display(),
-+                                err
-+                            );
-+                        })
-+                        .ok()?;
-+                        scaler.insert(ctx)
-+                    }
-+                };
-+
-+                let mut rgba = ffmpeg::frame::Video::empty();
-+                if let Err(err) = ctx.run(&decoded, &mut rgba) {
-+                    log::warn!("failed to scale frame from {}: {}", path.display(), err);
-+                    return None;
-+                }
-+
-+                // The scaled frame's rows may be padded to a stride wider than the
-+                // pixel data, so copy row-by-row into a tightly packed buffer.
-+                let stride = rgba.stride(0);
-+                let data = rgba.data(0);
-+                let row_bytes = width as usize * 4;
-+                let mut buf = Vec::with_capacity(row_bytes * height as usize);
-+                for row in 0..height as usize {
-+                    let start = row * stride;
-+                    buf.extend_from_slice(&data[start..start + row_bytes]);
-+                }
-+
-+                return image::RgbaImage::from_raw(width, height, buf)
-+                    .map(DynamicImage::ImageRgba8);
++                found = true;
++                break 'search;
 +            }
 +        }
 +
-+        None
++        if !found {
++            return None;
++        }
++
++        let (width, height) = (decoded.width(), decoded.height());
++        let mut scaler = ffmpeg::software::scaling::Context::get(
++            decoded.format(),
++            width,
++            height,
++            ffmpeg::format::Pixel::RGBA,
++            width,
++            height,
++            ffmpeg::software::scaling::Flags::BILINEAR,
++        )
++        .inspect_err(|err| {
++            log::warn!("failed to create scaler for {}: {}", path.display(), err);
++        })
++        .ok()?;
++
++        let mut rgba = ffmpeg::frame::Video::empty();
++        if let Err(err) = scaler.run(&decoded, &mut rgba) {
++            log::warn!("failed to scale frame from {}: {}", path.display(), err);
++            return None;
++        }
++
++        // The scaled frame's rows may be padded to a stride wider than the pixel data, so
++        // copy row-by-row into a tightly packed buffer.
++        let stride = rgba.stride(0);
++        let data = rgba.data(0);
++        let row_bytes = width as usize * 4;
++        let mut buf = Vec::with_capacity(row_bytes * height as usize);
++        for row in 0..height as usize {
++            let start = row * stride;
++            buf.extend_from_slice(&data[start..start + row_bytes]);
++        }
++
++        image::RgbaImage::from_raw(width, height, buf).map(DynamicImage::ImageRgba8)
 +    }
  }
  
  #[derive(Clone, Debug)]
-@@ -7936,4 +8093,61 @@ mod tests {
+@@ -7936,4 +8141,61 @@ mod tests {
          }
          Ok(())
      }

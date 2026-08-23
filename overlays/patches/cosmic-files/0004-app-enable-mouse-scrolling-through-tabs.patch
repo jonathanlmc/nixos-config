@@ -1,0 +1,116 @@
+From 0de9822a06f75599c7cdf4bf5997c95d501109c6 Mon Sep 17 00:00:00 2001
+From: Jonathan M <jgit@tuta.io>
+Date: Sat, 22 Aug 2026 17:19:14 -0700
+Subject: [PATCH 4/4] app: enable mouse scrolling through tabs
+
+---
+ src/app.rs | 79 ++++++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 65 insertions(+), 14 deletions(-)
+
+diff --git a/src/app.rs b/src/app.rs
+index afc22f4..0ffdada 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -486,6 +486,33 @@ pub enum Message {
+     CutPaths(Vec<PathBuf>),
+ }
+ 
++/// Maps a wheel gesture over the tab bar to the adjacent tab.
++///
++/// Vertical scrolling is preferred for a conventional mouse wheel. For a
++/// trackpad gesture, use the dominant axis so horizontal tab-bar scrolling is
++/// intuitive as well.
++fn tab_switch_for_scroll(delta: mouse::ScrollDelta) -> Option<Message> {
++    let (x, y) = match delta {
++        mouse::ScrollDelta::Lines { x, y } | mouse::ScrollDelta::Pixels { x, y } => (x, y),
++    };
++
++    if y.abs() >= x.abs() {
++        if y > 0.0 {
++            Some(Message::TabPrev)
++        } else if y < 0.0 {
++            Some(Message::TabNext)
++        } else {
++            None
++        }
++    } else if x > 0.0 {
++        Some(Message::TabNext)
++    } else if x < 0.0 {
++        Some(Message::TabPrev)
++    } else {
++        None
++    }
++}
++
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ pub enum ContextPage {
+     About,
+@@ -6532,20 +6559,23 @@ impl Application for App {
+         if self.tab_model.len() > 1 {
+             tab_column = tab_column.push(
+                 widget::container(
+-                    widget::tab_bar::horizontal(&self.tab_model)
+-                        .button_height(32)
+-                        .button_spacing(space_xxs)
+-                        .enable_tab_drag(String::from("x-cosmic-files/tab-dnd"))
+-                        .on_reorder(Message::ReorderTab)
+-                        .tab_drag_threshold(25.)
+-                        .on_activate(Message::TabActivate)
+-                        .on_close(|entity| Message::TabClose(Some(entity)))
+-                        .on_dnd_enter(Message::DndEnterTab)
+-                        .on_dnd_leave(|_| Message::DndExitTab)
+-                        .on_dnd_drop(|entity, data, action| {
+-                            Message::DndDropTab(entity, data, action)
+-                        })
+-                        .drag_id(self.tab_drag_id),
++                    crate::mouse_area::MouseArea::new(
++                        widget::tab_bar::horizontal(&self.tab_model)
++                            .button_height(32)
++                            .button_spacing(space_xxs)
++                            .enable_tab_drag(String::from("x-cosmic-files/tab-dnd"))
++                            .on_reorder(Message::ReorderTab)
++                            .tab_drag_threshold(25.)
++                            .on_activate(Message::TabActivate)
++                            .on_close(|entity| Message::TabClose(Some(entity)))
++                            .on_dnd_enter(Message::DndEnterTab)
++                            .on_dnd_leave(|_| Message::DndExitTab)
++                            .on_dnd_drop(|entity, data, action| {
++                                Message::DndDropTab(entity, data, action)
++                            })
++                            .drag_id(self.tab_drag_id),
++                    )
++                    .on_scroll(tab_switch_for_scroll),
+                 )
+                 .width(Length::Fill)
+                 .padding([0, space_s]),
+@@ -7118,6 +7148,27 @@ impl Application for App {
+ // Utilities to build a temporary file hierarchy for tests.
+ //
+ // Ideally, tests would use the cap-std crate which limits path traversal.
++#[cfg(test)]
++mod wheel_tests {
++    use super::*;
++
++    #[test]
++    fn tab_wheel_scroll_selects_adjacent_tabs() {
++        assert!(matches!(
++            tab_switch_for_scroll(mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 }),
++            Some(Message::TabNext)
++        ));
++        assert!(matches!(
++            tab_switch_for_scroll(mouse::ScrollDelta::Pixels { x: 0.0, y: 1.0 }),
++            Some(Message::TabPrev)
++        ));
++        assert!(matches!(
++            tab_switch_for_scroll(mouse::ScrollDelta::Pixels { x: 8.0, y: 1.0 }),
++            Some(Message::TabNext)
++        ));
++    }
++}
++
+ #[cfg(test)]
+ pub(crate) mod test_utils {
+     use std::cmp::Ordering;
+-- 
+2.55.0
+

@@ -1,12 +1,12 @@
-From ea10a7400231b8162d30690528d8c9119bb6d4f8 Mon Sep 17 00:00:00 2001
+From 73653aedf025873b3f2f37b4b0c53db5c35f34f7 Mon Sep 17 00:00:00 2001
 From: Jonathan M <jgit@tuta.io>
 Date: Thu, 20 Aug 2026 16:22:11 -0700
-Subject: [PATCH 3/3] tab: rotating video thumbnails
+Subject: [PATCH 3/4] tab: rotating video thumbnails
 
 ---
  src/mounter/gvfs.rs |   3 +-
- src/tab.rs          | 312 +++++++++++++++++++++++++++++++++++++++++---
- 2 files changed, 296 insertions(+), 19 deletions(-)
+ src/tab.rs          | 424 +++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 422 insertions(+), 5 deletions(-)
 
 diff --git a/src/mounter/gvfs.rs b/src/mounter/gvfs.rs
 index 1b7af76..15edd29 100644
@@ -30,7 +30,7 @@ index 1b7af76..15edd29 100644
              pos_opt: Cell::new(None),
              rect_opt: Cell::new(None),
 diff --git a/src/tab.rs b/src/tab.rs
-index c41c2fe..00b9873 100644
+index 351c6c5..51068bc 100644
 --- a/src/tab.rs
 +++ b/src/tab.rs
 @@ -30,7 +30,7 @@ use rustc_hash::FxHashMap;
@@ -103,109 +103,7 @@ index c41c2fe..00b9873 100644
      DirectorySize(PathBuf, DirSize),
      Checksums(PathBuf, ChecksumState),
      CalculateChecksums(PathBuf),
-@@ -2341,11 +2360,18 @@ impl ItemThumbnail {
-         None
-     }
- 
--    /// Extracts the frame at the midpoint of the video's duration by decoding directly
--    /// with libav (via `ffmpeg-next`), rather than shelling out to the `ffmpeg` binary.
--    /// Returns `None` on any failure (unsupported format, no video stream, decode error).
-+    /// Extracts the frame at the midpoint of the video's duration. See [`Self::video_frame_at`].
-     #[cfg(feature = "video-thumbnails")]
-     fn video_middle_frame(path: &Path) -> Option<DynamicImage> {
-+        Self::video_frame_at(path, 0.5)
-+    }
-+
-+    /// Extracts the frame at `fraction` (0.0 = start, 1.0 = end) of the video's duration,
-+    /// by decoding directly with libav (via `ffmpeg-next`) rather than shelling out to the
-+    /// `ffmpeg` binary. Returns `None` on any failure (unsupported format, no video stream,
-+    /// decode error, or a seek target past the last decodable frame).
-+    #[cfg(feature = "video-thumbnails")]
-+    fn video_frame_at(path: &Path, fraction: f64) -> Option<DynamicImage> {
-         use ffmpeg_next as ffmpeg;
- 
-         // Safe to call repeatedly; only sets up libav's internal state once.
-@@ -2364,6 +2390,7 @@ impl ItemThumbnail {
- 
-         let video_stream = input.streams().best(ffmpeg::media::Type::Video)?;
-         let video_stream_index = video_stream.index();
-+        let stream_time_base = f64::from(video_stream.time_base());
-         let mut decoder =
-             match ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())
-                 .and_then(|context| context.decoder().video())
-@@ -2379,20 +2406,32 @@ impl ItemThumbnail {
-                 }
-             };
- 
--        // Seek to the midpoint of the container's duration (AV_TIME_BASE units).
--        // This is a best-effort, keyframe-based seek, same as `ffmpeg -ss`; if the
--        // duration is unknown, fall back to decoding from the start of the file.
-+        // Seek to `fraction` of the container's duration (AV_TIME_BASE units). This is a
-+        // best-effort, keyframe-based seek - it only guarantees landing at or before the
-+        // nearest preceding keyframe, which for a long GOP can be well short of the target.
-+        // If the duration is unknown, fall back to decoding from the start of the file.
-         let duration = input.duration();
-+        let target_secs = fraction.clamp(0.0, 1.0) * (duration.max(0) as f64 / 1_000_000.0);
-         if duration > 0 {
--            let target = duration / 2;
--            if let Err(err) = input.seek(target, ..) {
--                log::debug!("failed to seek {} to midpoint: {}", path.display(), err);
-+            let seek_target = (target_secs * 1_000_000.0) as i64;
-+            if let Err(err) = input.seek(seek_target, ..) {
-+                log::debug!(
-+                    "failed to seek {} to {:.0}%: {}",
-+                    path.display(),
-+                    fraction * 100.0,
-+                    err
-+                );
-             }
-         }
- 
-+        // Decode forward from the keyframe the seek landed on until a frame's own
-+        // timestamp reaches the target, converting each candidate frame as we go (frame
-+        // buffers aren't cheaply cloneable, so the converted image itself is what carries
-+        // the "best so far" result if EOF is hit first).
-         let mut scaler: Option<ffmpeg::software::scaling::Context> = None;
-         let mut decoded = ffmpeg::frame::Video::empty();
--        for (stream, packet) in input.packets() {
-+        let mut result: Option<DynamicImage> = None;
-+        'search: for (stream, packet) in input.packets() {
-             if stream.index() != video_stream_index || decoder.send_packet(&packet).is_err() {
-                 continue;
-             }
-@@ -2430,7 +2469,7 @@ impl ItemThumbnail {
-                 let mut rgba = ffmpeg::frame::Video::empty();
-                 if let Err(err) = ctx.run(&decoded, &mut rgba) {
-                     log::warn!("failed to scale frame from {}: {}", path.display(), err);
--                    return None;
-+                    break 'search;
-                 }
- 
-                 // The scaled frame's rows may be padded to a stride wider than the
-@@ -2444,12 +2483,19 @@ impl ItemThumbnail {
-                     buf.extend_from_slice(&data[start..start + row_bytes]);
-                 }
- 
--                return image::RgbaImage::from_raw(width, height, buf)
--                    .map(DynamicImage::ImageRgba8);
-+                result = image::RgbaImage::from_raw(width, height, buf).map(DynamicImage::ImageRgba8);
-+
-+                let pts_secs = decoded
-+                    .pts()
-+                    .map(|pts| pts as f64 * stream_time_base)
-+                    .unwrap_or(0.0);
-+                if pts_secs >= target_secs {
-+                    break 'search;
-+                }
-             }
-         }
- 
--        None
-+        result
-     }
- }
- 
-@@ -2467,6 +2513,9 @@ pub struct Item {
+@@ -2515,6 +2534,9 @@ pub struct Item {
      pub icon_handle_list: widget::icon::Handle,
      pub icon_handle_list_condensed: widget::icon::Handle,
      pub thumbnail_opt: Option<ItemThumbnail>,
@@ -215,7 +113,7 @@ index c41c2fe..00b9873 100644
      pub button_id: widget::Id,
      pub pos_opt: Cell<Option<(usize, usize)>>,
      pub rect_opt: Cell<Option<Rectangle>>,
-@@ -2960,6 +3009,12 @@ pub struct Tab {
+@@ -3008,6 +3030,12 @@ pub struct Tab {
      pub(crate) parent_item_opt: Option<Box<Item>>,
      pub(crate) items_opt: Option<Vec<Item>>,
      pub dnd_hovered: Option<(Location, Instant)>,
@@ -228,7 +126,7 @@ index c41c2fe..00b9873 100644
      pub(crate) scrollable_id: widget::Id,
      select_focus: Option<usize>,
      select_range: Option<(usize, usize)>,
-@@ -3111,6 +3166,8 @@ impl Tab {
+@@ -3159,6 +3187,8 @@ impl Tab {
              select_range: None,
              clicked: None,
              dnd_hovered: None,
@@ -237,7 +135,7 @@ index c41c2fe..00b9873 100644
              selected_clicked: false,
              last_right_click: None,
              search_context: None,
-@@ -4632,6 +4689,49 @@ impl Tab {
+@@ -4680,6 +4710,49 @@ impl Tab {
                      item.highlighted = true;
                  }
              }
@@ -287,7 +185,7 @@ index c41c2fe..00b9873 100644
              Message::Resize(viewport) => {
                  // Scroll to ensure focused item still in view
                  if self.viewport_opt.map(|v| v.size()) != Some(viewport.size())
-@@ -5954,10 +6054,28 @@ impl Tab {
+@@ -6002,10 +6075,28 @@ impl Tab {
  
                  // Only build elements if visible (for performance)
                  if item_rect.intersects(&visible_rect) {
@@ -317,7 +215,7 @@ index c41c2fe..00b9873 100644
                                  .content_fit(ContentFit::Contain)
                                  .size(icon_sizes.grid()),
                          )
-@@ -6027,8 +6145,8 @@ impl Tab {
+@@ -6075,8 +6166,8 @@ impl Tab {
                          .on_double_click(move |_| Message::DoubleClick(Some(i)))
                          .on_release(move |_| Message::ClickRelease(Some(i)))
                          .on_middle_press(move |_| Message::MiddleClick(i))
@@ -328,7 +226,7 @@ index c41c2fe..00b9873 100644
                      grid_elements[row].push(Element::from(mouse_area));
                  } else {
                      // Add a spacer if the row is empty, so scroll works
-@@ -7326,6 +7444,118 @@ impl Tab {
+@@ -7374,6 +7465,118 @@ impl Tab {
                      }
                  }
              }
@@ -447,7 +345,7 @@ index c41c2fe..00b9873 100644
          }
  
          // Load search items incrementally
-@@ -8150,4 +8380,50 @@ mod tests {
+@@ -8198,4 +8401,217 @@ mod tests {
          }
          Ok(())
      }
@@ -478,6 +376,11 @@ index c41c2fe..00b9873 100644
 +                "libx264",
 +                "-pix_fmt",
 +                "yuv420p",
++                // A short keyframe interval so the 10%/90% marks land on distinct keyframes -
++                // extraction now just takes the frame nearest the seek target, so without this
++                // a default-GOP encode would only have one keyframe across a 10s/10fps clip.
++                "-g",
++                "10",
 +                "-y",
 +            ])
 +            .arg(&path)
@@ -495,6 +398,168 @@ index c41c2fe..00b9873 100644
 +            frame_90.to_rgba8().into_raw(),
 +            "frames at 10% and 90% of a 10s video should not be pixel-identical"
 +        );
++        Ok(())
++    }
++
++    #[cfg(feature = "video-thumbnails")]
++    #[test]
++    fn item_thumbnail_video_middle_frame_falls_back_on_slow_seek_format() -> io::Result<()> {
++        if std::process::Command::new("ffmpeg")
++            .arg("-version")
++            .output()
++            .is_err()
++        {
++            eprintln!("skipping test: ffmpeg binary not installed");
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++
++        // MP4/H.264 supports fast, index-based seeking - the static thumbnail should be a
++        // frame near the middle keyframe, distinct from the first frame.
++        let mp4_path = dir.path().join("test.mp4");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=10:size=64x48:rate=10",
++                "-c:v",
++                "libx264",
++                "-pix_fmt",
++                "yuv420p",
++                // A short keyframe interval so the 0%/50% marks land on distinct keyframes.
++                "-g",
++                "10",
++                "-y",
++            ])
++            .arg(&mp4_path)
++            .status()?;
++        assert!(status.success(), "failed to generate mp4 test video");
++        assert!(
++            ItemThumbnail::format_supports_fast_seek(&mp4_path),
++            "mp4 should report fast seek support"
++        );
++        let mp4_first = ItemThumbnail::video_frame_at(&mp4_path, 0.0)
++            .expect("expected first frame for mp4");
++        let mp4_middle =
++            ItemThumbnail::video_middle_frame(&mp4_path).expect("expected middle frame for mp4");
++        assert_ne!(
++            mp4_first.to_rgba8().into_raw(),
++            mp4_middle.to_rgba8().into_raw(),
++            "mp4 static thumbnail should be a frame near the middle, not the first frame"
++        );
++
++        // ASF/WMV disables ffmpeg's generic seek fallbacks (AVFMT_NOBINSEARCH |
++        // AVFMT_NOGENSEARCH), so the static thumbnail should fall back to the first frame.
++        let wmv_path = dir.path().join("test.wmv");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=10:size=64x48:rate=10",
++                "-c:v",
++                "msmpeg4v3",
++                "-y",
++            ])
++            .arg(&wmv_path)
++            .status()?;
++        assert!(status.success(), "failed to generate wmv test video");
++        assert!(
++            !ItemThumbnail::format_supports_fast_seek(&wmv_path),
++            "asf/wmv should report no fast seek support"
++        );
++        let wmv_first = ItemThumbnail::video_frame_at(&wmv_path, 0.0)
++            .expect("expected first frame for wmv");
++        let wmv_middle =
++            ItemThumbnail::video_middle_frame(&wmv_path).expect("expected fallback frame for wmv");
++        assert_eq!(
++            wmv_first.to_rgba8().into_raw(),
++            wmv_middle.to_rgba8().into_raw(),
++            "wmv static thumbnail should fall back to the first frame"
++        );
++
++        Ok(())
++    }
++
++    #[cfg(feature = "video-thumbnails")]
++    #[test]
++    fn item_thumbnail_video_sparse_keyframe_never_decodes_past_the_keyframe() -> io::Result<()> {
++        if std::process::Command::new("ffmpeg")
++            .arg("-version")
++            .output()
++            .is_err()
++        {
++            eprintln!("skipping test: ffmpeg binary not installed");
++            return Ok(());
++        }
++
++        // A single keyframe for the whole file (typical of some WebM/VP8/VP9 screen
++        // recordings) means every seek lands on frame 0. Since extraction now just takes the
++        // first frame the seek lands on rather than decoding forward towards the exact target,
++        // every fraction should resolve to that same frame - and cheaply, regardless of how
++        // far into a long file the target nominally is.
++        let dir = TempDir::new()?;
++        let path = dir.path().join("sparse_keyframe.webm");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=15:size=64x48:rate=30",
++                "-c:v",
++                "libvpx-vp9",
++                "-deadline",
++                "realtime",
++                "-cpu-used",
++                "8",
++                "-g",
++                "100000",
++                "-y",
++            ])
++            .arg(&path)
++            .status()?;
++        assert!(status.success(), "failed to generate test video");
++        assert_eq!(
++            std::process::Command::new("ffprobe")
++                .args([
++                    "-v", "error", "-select_streams", "v:0", "-show_entries",
++                    "frame=pict_type", "-of", "csv=p=0",
++                ])
++                .arg(&path)
++                .output()?
++                .stdout
++                .iter()
++                .filter(|&&b| b == b'I')
++                .count(),
++            1,
++            "test fixture should have exactly one keyframe"
++        );
++
++        let first = ItemThumbnail::video_frame_at(&path, 0.0).expect("expected first frame");
++        let middle = ItemThumbnail::video_frame_at(&path, 0.5).expect("expected frame at 50%");
++        let near_end = ItemThumbnail::video_frame_at(&path, 0.9).expect("expected frame at 90%");
++
++        // All three land on the sole keyframe, so they should be pixel-identical to the first
++        // frame - proving extraction never walks forward decoding intervening frames.
++        assert_eq!(
++            first.to_rgba8().into_raw(),
++            middle.to_rgba8().into_raw(),
++            "50% extraction on a single-keyframe file should match the first frame"
++        );
++        assert_eq!(
++            first.to_rgba8().into_raw(),
++            near_end.to_rgba8().into_raw(),
++            "90% extraction on a single-keyframe file should match the first frame"
++        );
++
 +        Ok(())
 +    }
  }
