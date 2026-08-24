@@ -53,9 +53,8 @@ self: super: rec {
     let
       cosmicFilesPatches = [
         ./patches/cosmic-files/0001-tab-enable-thumbnails-for-remote-drives.patch
-        ./patches/cosmic-files/0002-tab-video-thumbnails.patch
-        ./patches/cosmic-files/0003-tab-rotating-video-thumbnails.patch
-        ./patches/cosmic-files/0004-app-enable-mouse-scrolling-through-tabs.patch
+        ./patches/cosmic-files/0002-tab-video-thumbnails-3-way-folder-previews.patch
+        ./patches/cosmic-files/0003-app-enable-mouse-scrolling-through-tabs.patch
       ];
     in
     {

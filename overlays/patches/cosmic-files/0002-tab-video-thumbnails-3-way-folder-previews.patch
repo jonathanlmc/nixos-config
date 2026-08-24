@@ -1,0 +1,2383 @@
+From dc455ae5f8e08dac65561d2bcaff61281a1d33a8 Mon Sep 17 00:00:00 2001
+From: Jonathan M <jgit@tuta.io>
+Date: Thu, 20 Aug 2026 15:19:23 -0700
+Subject: [PATCH 2/3] tab: video thumbnails & 3-way folder previews
+
+---
+ Cargo.lock |   81 ++-
+ Cargo.toml |    7 +
+ src/app.rs |   78 ++-
+ src/tab.rs | 1776 +++++++++++++++++++++++++++++++++++++++++++++++++---
+ 4 files changed, 1864 insertions(+), 78 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index a463d07..e8cc65e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -673,6 +673,24 @@ dependencies = [
+  "serde",
+ ]
+ 
++[[package]]
++name = "bindgen"
++version = "0.72.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
++dependencies = [
++ "bitflags 2.13.1",
++ "cexpr",
++ "clang-sys",
++ "itertools 0.13.0",
++ "proc-macro2",
++ "quote",
++ "regex",
++ "rustc-hash 2.1.3",
++ "shlex 1.3.0",
++ "syn 2.0.119",
++]
++
+ [[package]]
+ name = "bit-set"
+ version = "0.8.0"
+@@ -943,6 +961,15 @@ dependencies = [
+  "shlex 2.0.1",
+ ]
+ 
++[[package]]
++name = "cexpr"
++version = "0.6.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
++dependencies = [
++ "nom 7.1.3",
++]
++
+ [[package]]
+ name = "cfb"
+ version = "0.7.3"
+@@ -1000,6 +1027,17 @@ dependencies = [
+  "inout",
+ ]
+ 
++[[package]]
++name = "clang-sys"
++version = "1.9.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "157a8ba7b480713b56f4c09fd13fc3e0a22a5dfab8097ba61cbc5feef950788a"
++dependencies = [
++ "glob",
++ "libc",
++ "libloading",
++]
++
+ [[package]]
+ name = "clipboard-win"
+ version = "5.4.1"
+@@ -1399,6 +1437,7 @@ dependencies = [
+  "cosmic-mime-apps",
+  "dirs 6.0.0",
+  "fastrand",
++ "ffmpeg-next",
+  "filetime",
+  "flate2",
+  "fork",
+@@ -2231,6 +2270,31 @@ dependencies = [
+  "simd-adler32",
+ ]
+ 
++[[package]]
++name = "ffmpeg-next"
++version = "9.0.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6380599799e175191eb7ffe82c97f36a2a90a36cbc54c738a903e5287d7f516a"
++dependencies = [
++ "bitflags 2.13.1",
++ "ffmpeg-sys-next",
++ "libc",
++]
++
++[[package]]
++name = "ffmpeg-sys-next"
++version = "9.0.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9b939bf79dd5949412a4b81cfe21a07f48ea21b47fcbb5f57816c8c2de5ae30b"
++dependencies = [
++ "bindgen",
++ "cc",
++ "libc",
++ "num_cpus",
++ "pkg-config",
++ "vcpkg",
++]
++
+ [[package]]
+ name = "file-id"
+ version = "0.2.3"
+@@ -4009,6 +4073,15 @@ version = "1.70.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+ 
++[[package]]
++name = "itertools"
++version = "0.13.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
++dependencies = [
++ "either",
++]
++
+ [[package]]
+ name = "itertools"
+ version = "0.14.0"
+@@ -6047,7 +6120,7 @@ dependencies = [
+  "built",
+  "cfg-if",
+  "interpolate_name",
+- "itertools",
++ "itertools 0.14.0",
+  "libc",
+  "libfuzzer-sys",
+  "log",
+@@ -7744,6 +7817,12 @@ version = "0.1.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+ 
++[[package]]
++name = "vcpkg"
++version = "0.2.15"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
++
+ [[package]]
+ name = "version-compare"
+ version = "0.2.1"
+diff --git a/Cargo.toml b/Cargo.toml
+index 68002b9..4ef2462 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -14,6 +14,11 @@ icu = { version = "2.2.0", features = ["compiled_data"] }
+ cctk = { git = "https://github.com/pop-os/cosmic-protocols", package = "cosmic-client-toolkit", rev = "32283d7", optional = true }
+ cosmic-mime-apps = { git = "https://github.com/pop-os/cosmic-mime-apps.git", optional = true }
+ dirs = "6.0.0"
++ffmpeg-next = { version = "9", default-features = false, features = [
++    "codec",
++    "format",
++    "software-scaling",
++], optional = true }
+ gio = { version = "0.21", optional = true }
+ glib = { version = "0.21", optional = true }
+ glob = "0.3"
+@@ -109,6 +114,7 @@ default = [
+     "io-uring",
+     "lzma-rust2",
+     "notify",
++    "video-thumbnails",
+     "wayland",
+     "wgpu",
+ ]
+@@ -119,6 +125,7 @@ gvfs = ["dep:gio", "dep:glib"]
+ io-uring = ["compio/io-uring"]
+ jemalloc = ["dep:tikv-jemallocator"]
+ notify = ["dep:notify-rust"]
++video-thumbnails = ["dep:ffmpeg-next"]
+ wayland = ["libcosmic/wayland", "dep:cctk", "dep:wayland-client"]
+ wgpu = ["libcosmic/wgpu"]
+ 
+diff --git a/src/app.rs b/src/app.rs
+index afc22f4..5feb7f6 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -424,6 +424,8 @@ pub enum Message {
+     Preview(Option<Entity>),
+     ReloadMimeAppCache,
+     ReorderTab(ReorderEvent),
++    /// Debounced trailing recompute of folder-tile watches; see `folder_watches_refresh_pending`.
++    RefreshFolderWatches,
+     RescanRecents,
+     RescanTrash,
+     RemoveFromRecents(Option<Entity>),
+@@ -734,6 +736,12 @@ pub struct App {
+     modifiers: Modifiers,
+     mounter_items: FxHashMap<MounterKey, MounterItems>,
+     must_save_sort_names: bool,
++    /// Whether a debounced `Message::RefreshFolderWatches` is already scheduled. Layout events
++    /// (`Resize` in particular) fire on every content-driven relayout - not just user resizes -
++    /// so a large directory loading many thumbnails can trigger dozens of these per second.
++    /// Coalescing them into a single trailing recompute avoids repeating the O(visible items)
++    /// watcher diff, across every tab, on the UI thread for each one.
++    folder_watches_refresh_pending: bool,
+     network_drive_connecting: Option<(MounterKey, String)>,
+     network_drive_input: String,
+     #[cfg(feature = "notify")]
+@@ -1901,7 +1909,7 @@ impl App {
+ 
+     fn update_watcher(&mut self) -> Task<Message> {
+         if let Some((mut watcher, old_paths)) = self.watcher_opt.take() {
+-            let new_paths: FxHashSet<_> = self
++            let mut new_paths: FxHashSet<_> = self
+                 .tab_model
+                 .iter()
+                 .filter_map(|entity| {
+@@ -1909,6 +1917,16 @@ impl App {
+                     tab.location.path_opt().cloned()
+                 })
+                 .collect();
++            // parent directory watches are intentionally non-recursive
++            //
++            // add only folders that are currently visible so their direct-child changes can
++            // invalidate a sample without watching an entire directory tree
++            new_paths.extend(self.tab_model.iter().flat_map(|entity| {
++                self.tab_model
++                    .data::<Tab>(entity)
++                    .into_iter()
++                    .flat_map(Tab::visible_folder_paths)
++            }));
+ 
+             // Unwatch paths no longer used
+             for path in &old_paths {
+@@ -2433,6 +2451,7 @@ impl Application for App {
+             modifiers: Modifiers::empty(),
+             mounter_items: FxHashMap::default(),
+             must_save_sort_names: false,
++            folder_watches_refresh_pending: false,
+             network_drive_connecting: None,
+             network_drive_input: String::new(),
+             #[cfg(feature = "notify")]
+@@ -3661,12 +3680,25 @@ impl Application for App {
+                 let entities: Box<[_]> = self.tab_model.iter().collect();
+                 for entity in entities {
+                     if let Some(tab) = self.tab_model.data_mut::<Tab>(entity)
+-                        && let Some(path) = tab.location.path_opt()
++                        && let Some(path) = tab.location.path_opt().cloned()
+                     {
+                         let mut contains_change = false;
+                         for event in &events {
+                             for event_path in &event.paths {
+-                                if event_path.starts_with(path) {
++                                if event_path.starts_with(&path) {
++                                    // a visible child-folder watch reports paths below a
++                                    // direct child of the tab's current directory (i.e. more
++                                    // than one level deep, excluding the tab directory itself
++                                    // and its direct children); those never trigger a full tab
++                                    // reload, whether or not the corresponding tile is still
++                                    // tracked (it may have scrolled off since the watch was
++                                    // set up) - only invalidate that tile's sample, if found
++                                    if event_path != &path
++                                        && event_path.parent() != Some(path.as_path())
++                                    {
++                                        tab.invalidate_folder_sample_for_child(event_path);
++                                        continue;
++                                    }
+                                     if let notify::EventKind::Modify(
+                                         notify::event::ModifyKind::Metadata(_)
+                                         | notify::event::ModifyKind::Data(_),
+@@ -4469,8 +4501,35 @@ impl Application for App {
+             Message::TabMessage(entity_opt, tab_message) => {
+                 let entity = entity_opt.unwrap_or_else(|| self.tab_model.active());
+ 
++                // only messages that can change the visible item set or layout need to refresh
++                // folder-tile watches; location changes are already handled by the
++                // `ChangeLocation` command below
++                //
++                // checking this up front avoids recomputing watches (an O(visible items) diff)
++                // on every click, key press, etc
++                let is_layout_message = tab_message.affects_visible_layout();
++                // `Thumbnail` is a safety net: item rects are only populated once `view()` has
++                // run, so relying on it too guarantees at least one recompute happens after the
++                // first layout even if `on_resize` doesn't fire for some layout path
++                //
++                // it's only needed until a real layout message primes the tab, though -
++                // otherwise a burst of thumbnail arrivals (e.g. a large directory loading in)
++                // would each force an O(visible items) watch recompute of their own
++                let is_thumbnail_message = matches!(&tab_message, tab::Message::Thumbnail(_, _));
++                let needs_priming = is_thumbnail_message
++                    && self
++                        .tab_model
++                        .data::<Tab>(entity)
++                        .is_some_and(|tab| !tab.folder_watches_primed);
++                let should_refresh_folder_watches = is_layout_message || needs_priming;
++
+                 let tab_commands = match self.tab_model.data_mut::<Tab>(entity) {
+-                    Some(tab) => tab.update(tab_message, self.modifiers),
++                    Some(tab) => {
++                        if is_layout_message {
++                            tab.folder_watches_primed = true;
++                        }
++                        tab.update(tab_message, self.modifiers)
++                    }
+                     _ => Vec::new(),
+                 };
+ 
+@@ -4748,8 +4807,19 @@ impl Application for App {
+                         }
+                     }
+                 }
++                if should_refresh_folder_watches && !self.folder_watches_refresh_pending {
++                    self.folder_watches_refresh_pending = true;
++                    commands.push(Task::future(async move {
++                        tokio::time::sleep(Duration::from_millis(250)).await;
++                        cosmic::action::app(Message::RefreshFolderWatches)
++                    }));
++                }
+                 return Task::batch(commands);
+             }
++            Message::RefreshFolderWatches => {
++                self.folder_watches_refresh_pending = false;
++                return self.update_watcher();
++            }
+             Message::TabNew => {
+                 let active = self.tab_model.active();
+                 let location = match self.tab_model.data::<Tab>(active) {
+diff --git a/src/tab.rs b/src/tab.rs
+index 6ea1254..823448f 100644
+--- a/src/tab.rs
++++ b/src/tab.rs
+@@ -9,10 +9,10 @@ use cosmic::iced::core::widget::tree;
+ use cosmic::iced::futures::{self, SinkExt};
+ use cosmic::iced::keyboard::Modifiers;
+ use cosmic::iced::widget::scrollable::{self, AbsoluteOffset, Viewport};
+-use cosmic::iced::widget::{rule, stack};
++use cosmic::iced::widget::{Stack, pin, rule, stack};
+ use cosmic::iced::{
+-    Alignment, Border, Color, ContentFit, Length, Point, Rectangle, Size, Subscription, Vector,
+-    padding, stream, window,
++    Alignment, Border, Color, ContentFit, Degrees, Length, Point, Rectangle, Rotation, Size,
++    Subscription, Vector, padding, stream, window,
+ };
+ use cosmic::widget::menu::action::MenuAction;
+ use cosmic::widget::menu::key_bind::KeyBind;
+@@ -30,7 +30,7 @@ use rustc_hash::FxHashMap;
+ use serde::{Deserialize, Serialize};
+ use sha2::{Digest, Sha256};
+ use std::borrow::Cow;
+-use std::cell::Cell;
++use std::cell::{Cell, RefCell};
+ use std::cmp::{Ordering, Reverse};
+ use std::collections::{BTreeMap, BTreeSet, HashMap};
+ use std::error::Error;
+@@ -82,6 +82,20 @@ const TEXT_PREVIEW_MAX_BYTES: usize = 256 * 1024; // 256 KiB
+ /// Maximum file size (bytes) to attempt text preview; files larger than this are skipped entirely.
+ const TEXT_PREVIEW_MAX_FILE_BYTES: u64 = 8 * 1000 * 1000; // 8 MiB
+ 
++/// Number of rotating hover-scrub thumbnail frames sampled per video, and the fixed size of
++/// `Tab::video_scrub_frames`.
++const VIDEO_SCRUB_FRAME_COUNT: usize = 5;
++/// Points in a video's duration (as a fraction, 0.0-1.0) sampled for the hover-scrub grid
++/// thumbnail - the midpoint of each successive 20% segment.
++#[cfg(feature = "video-thumbnails")]
++const VIDEO_SCRUB_FRACTIONS: [f64; VIDEO_SCRUB_FRAME_COUNT] = [0.1, 0.3, 0.5, 0.7, 0.9];
++/// Index into `VIDEO_SCRUB_FRACTIONS`/`Tab::video_scrub_frames` for the 50% frame, which is
++/// already decoded as the item's static thumbnail and can be reused instead of redecoded.
++const VIDEO_SCRUB_MIDDLE_INDEX: usize = 2;
++/// How long each rotating scrub frame is shown before advancing to the next one.
++#[cfg(feature = "video-thumbnails")]
++const VIDEO_SCRUB_TICK: Duration = Duration::from_millis(900);
++
+ // Thumbnail generation semaphore - limits parallel thumbnail workers
+ // Uses 4 workers for balanced throughput and memory usage
+ pub static THUMB_SEMAPHORE: LazyLock<tokio::sync::Semaphore> =
+@@ -279,6 +293,13 @@ fn button_style(
+     }
+ }
+ 
++fn icon_handle_from_image(handle: widget::image::Handle) -> widget::icon::Handle {
++    widget::icon::Handle {
++        symbolic: false,
++        data: widget::icon::Data::Image(handle),
++    }
++}
++
+ pub fn folder_icon(path: &PathBuf, icon_size: u16) -> widget::icon::Handle {
+     widget::icon::from_name(SPECIAL_DIRS.get(path).map_or("folder", |x| *x))
+         .prefer_svg(true)
+@@ -1819,6 +1840,10 @@ pub enum Message {
+     ZoomOut,
+     HighlightDeactivate(usize),
+     HighlightActivate(usize),
++    VideoScrubStart(usize),
++    VideoScrubStop(usize),
++    VideoScrubFrame(PathBuf, usize, Option<widget::icon::Handle>),
++    VideoScrubTick,
+     DirectorySize(PathBuf, DirSize),
+     Checksums(PathBuf, ChecksumState),
+     CalculateChecksums(PathBuf),
+@@ -1826,6 +1851,20 @@ pub enum Message {
+     ImageDecoded(PathBuf, u32, u32, Vec<u8>, Option<(u32, u32)>, u64), // path, width, height, pixels, display_size, generation
+ }
+ 
++impl Message {
++    /// Whether this message can change which items are laid out or which are visible - the
++    /// callers that watch individual folder tiles for content changes (see
++    /// `Tab::visible_folder_paths`) only need to recompute their watch set in response to
++    /// messages like these, kept here so that knowledge of which variants qualify lives next to
++    /// the variants themselves rather than in a distant caller.
++    pub(crate) fn affects_visible_layout(&self) -> bool {
++        matches!(
++            self,
++            Self::Resize(_) | Self::Scroll(_) | Self::ScrollTab(_) | Self::ScrollToFocused | Self::Config(_)
++        )
++    }
++}
++
+ #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+ pub enum LocationMenuAction {
+     OpenInNewTab(usize),
+@@ -1946,8 +1985,38 @@ pub enum ItemThumbnail {
+     Image(widget::image::Handle, Option<(u32, u32)>),
+     Svg(widget::svg::Handle),
+     Text(widget::text_editor::Content),
++    /// A lightweight, in-memory summary of direct children of a folder. The themed folder
++    /// icon remains the background; these entries are painted on top by each icon view.
++    FolderSample(Vec<FolderSampleEntry>),
++}
++
++#[derive(Clone, Debug)]
++pub enum FolderSampleEntry {
++    Image(widget::image::Handle),
++    Icon(widget::icon::Handle),
++}
++
++/// A child of a folder (direct, or nested when the direct level had no visual media) eligible
++/// to be shown in a [`FolderSampleEntry`], along with the information needed to rank and (if
++/// selected) resolve it.
++#[derive(Clone, Debug)]
++struct FolderSampleCandidate {
++    path: PathBuf,
++    metadata: Metadata,
++    mime: Mime,
++    visual: bool,
+ }
+ 
++/// Maximum folder depth searched for visual media (images/videos) when building a folder
++/// sample, counting the folder's own direct children as depth 1. Only consulted when the
++/// direct children include no visual media at all.
++const FOLDER_SAMPLE_MAX_DEPTH: u32 = 3;
++
++/// Cap on directories read while searching deeper levels for a folder sample, so a folder full
++/// of subdirectories with no visual media (e.g. `node_modules`) can't turn a thumbnail into an
++/// unbounded walk.
++const FOLDER_SAMPLE_DEEP_SCAN_DIR_LIMIT: usize = 200;
++
+ impl Clone for ItemThumbnail {
+     fn clone(&self) -> Self {
+         match self {
+@@ -1958,6 +2027,7 @@ impl Clone for ItemThumbnail {
+             Self::Text(content) => {
+                 Self::Text(widget::text_editor::Content::with_text(&content.text()))
+             }
++            Self::FolderSample(entries) => Self::FolderSample(entries.clone()),
+         }
+     }
+ }
+@@ -1972,6 +2042,9 @@ impl ItemThumbnail {
+         jobs: usize,
+         max_size_mb: u64,
+     ) -> Self {
++        if metadata.is_dir() {
++            return Self::folder_sample(path, thumbnail_size, max_mem, jobs, max_size_mb);
++        }
+         let thumbnail_cacher =
+             ThumbnailCacher::new(path, ThumbnailSize::from_pixel_size(thumbnail_size));
+         match thumbnail_cacher.as_ref() {
+@@ -2104,7 +2177,7 @@ impl ItemThumbnail {
+                         }
+                     }
+                 } else {
+-                    // Fallback for when thumbnail cacher isn't available.
++                    // fallback for when thumbnail cacher isn't available
+                     let thumbnail = dyn_img
+                         .thumbnail(thumbnail_size, thumbnail_size)
+                         .into_rgba8();
+@@ -2120,6 +2193,53 @@ impl ItemThumbnail {
+             }
+         }
+ 
++        // try built-in video thumbnailer: extracts the middle frame directly via libav
++        // (no size limit - a single decoded frame is cheap regardless of file length)
++        //
++        // this runs before the generic external thumbnailers below since freedesktop
++        // registered video thumbnailers (e.g. totem-video-thumbnailer) don't reliably
++        // grab the middle frame
++        #[cfg(feature = "video-thumbnails")]
++        if mime.type_() == mime::VIDEO {
++            // only mark this as "tried" once extraction is actually attempted, so a
++            // build without the feature falls through to external thumbnailers instead
++            // of permanently caching a failure for every video it sees
++            tried_supported_file = true;
++            if let Some(frame) = Self::video_middle_frame(path) {
++                let (frame_width, frame_height) = (frame.width(), frame.height());
++                if let Ok(cacher) = thumbnail_cacher.as_ref() {
++                    match cacher.update_with_image(frame) {
++                        Ok(thumb_path) => {
++                            return Self::Image(
++                                widget::image::Handle::from_path(thumb_path),
++                                Some((frame_width, frame_height)),
++                            );
++                        }
++                        Err(err) => {
++                            log::warn!(
++                                "cacher failed to cache video thumbnail for {}: {}",
++                                path.display(),
++                                err
++                            );
++                        }
++                    }
++                } else {
++                    // fallback for when thumbnail cacher isn't available
++                    let thumbnail = frame
++                        .thumbnail(thumbnail_size, thumbnail_size)
++                        .into_rgba8();
++                    return Self::Image(
++                        widget::image::Handle::from_rgba(
++                            thumbnail.width(),
++                            thumbnail.height(),
++                            thumbnail.into_raw(),
++                        ),
++                        Some((frame_width, frame_height)),
++                    );
++                }
++            }
++        }
++
+         // Try external thumbnailers.
+         let thumbnail_dir = thumbnail_cacher
+             .as_ref()
+@@ -2205,6 +2325,180 @@ impl ItemThumbnail {
+         Self::NotImage
+     }
+ 
++    /// Direct, non-hidden children of a folder: regular files as folder-sample candidates,
++    /// unsorted, plus the subdirectories, which callers use to keep searching when this level
++    /// has no visual candidate. Honors the same hiding rules as the main item listing - a
++    /// leading dot, the OS hidden attribute, or a name listed in the folder's `.hidden` file -
++    /// so a folder sample never surfaces a file the user has hidden. Returns `None` if the
++    /// directory can't be read.
++    fn folder_sample_direct_children_unsorted(
++        path: &Path,
++    ) -> Option<(Vec<FolderSampleCandidate>, Vec<PathBuf>)> {
++        let entries = match fs::read_dir(path) {
++            Ok(entries) => entries,
++            Err(err) => {
++                log::debug!("failed to read folder sample for {}: {err}", path.display());
++                return None;
++            }
++        };
++        let hidden_names = parse_hidden_file(&path.join(".hidden"));
++        let mut candidates = Vec::new();
++        let mut subdirs = Vec::new();
++        for entry in entries.filter_map(Result::ok) {
++            let name = entry.file_name();
++            if name.as_encoded_bytes().first() == Some(&b'.') {
++                continue;
++            }
++            if hidden_names
++                .iter()
++                .any(|hidden| std::ffi::OsStr::new(hidden) == name)
++            {
++                continue;
++            }
++            let child_path = entry.path();
++            let Ok(metadata) = entry.metadata() else {
++                continue;
++            };
++            if hidden_attribute(&metadata) {
++                continue;
++            }
++            if metadata.is_dir() {
++                subdirs.push(child_path);
++                continue;
++            }
++            if !metadata.is_file() {
++                continue;
++            }
++            let mime = mime_for_path(&child_path, Some(&metadata), false);
++            let visual = matches!(mime.type_(), mime::IMAGE | mime::VIDEO);
++            candidates.push(FolderSampleCandidate {
++                path: child_path,
++                metadata,
++                mime,
++                visual,
++            });
++        }
++        Some((candidates, subdirs))
++    }
++
++    /// Newest-modified-first ordering for folder-sample candidates, with pathname ascending as
++    /// a stable tie-breaker (ties are always fully resolved this way, so callers may sort
++    /// unstably).
++    fn by_recency(a: &FolderSampleCandidate, b: &FolderSampleCandidate) -> Ordering {
++        let a_modified = a.metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
++        let b_modified = b.metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
++        b_modified.cmp(&a_modified).then_with(|| a.path.cmp(&b.path))
++    }
++
++    /// Direct, non-hidden children of a folder: regular files as folder-sample candidates,
++    /// ranked with visual media (images/videos) ahead of ordinary files, then by
++    /// [`Self::by_recency`], plus the subdirectories. Returns `None` if the directory can't be
++    /// read.
++    fn folder_sample_direct_children(
++        path: &Path,
++    ) -> Option<(Vec<FolderSampleCandidate>, Vec<PathBuf>)> {
++        let (mut candidates, subdirs) = Self::folder_sample_direct_children_unsorted(path)?;
++        candidates.sort_unstable_by(|a, b| b.visual.cmp(&a.visual).then_with(|| Self::by_recency(a, b)));
++        Some((candidates, subdirs))
++    }
++
++    /// Folder-sample candidates for a folder: its own direct children (see
++    /// [`Self::folder_sample_direct_children`]), unless none of them are visual media, in which
++    /// case subdirectories are searched breadth-first for image/video files - the direct
++    /// children count as depth 1, descending up to `FOLDER_SAMPLE_MAX_DEPTH` - and those replace
++    /// the direct-children candidates if any turn up. Returns `None` if the top-level directory
++    /// can't be read.
++    fn folder_sample_candidates(path: &Path) -> Option<Vec<FolderSampleCandidate>> {
++        let (candidates, subdirs) = Self::folder_sample_direct_children(path)?;
++        if candidates.iter().any(|c| c.visual) {
++            return Some(candidates);
++        }
++
++        let mut dir_budget = FOLDER_SAMPLE_DEEP_SCAN_DIR_LIMIT;
++        let mut frontier = subdirs;
++        for _level in 2..=FOLDER_SAMPLE_MAX_DEPTH {
++            let mut found = Vec::new();
++            let mut next_frontier = Vec::new();
++            for dir in frontier {
++                if dir_budget == 0 {
++                    break;
++                }
++                dir_budget -= 1;
++                // unsorted: only visual candidates survive the filter below, and `found` gets
++                // its own sort once the level is fully collected, so ranking non-visual files
++                // here would be wasted work
++                let Some((children, child_subdirs)) =
++                    Self::folder_sample_direct_children_unsorted(&dir)
++                else {
++                    continue;
++                };
++                found.extend(children.into_iter().filter(|c| c.visual));
++                next_frontier.extend(child_subdirs);
++            }
++            if !found.is_empty() {
++                found.sort_unstable_by(Self::by_recency);
++                return Some(found);
++            }
++            if dir_budget == 0 {
++                break;
++            }
++            frontier = next_frontier;
++        }
++        Some(candidates)
++    }
++
++    /// Build a folder sample from at most three candidates: the folder's own direct,
++    /// non-hidden regular files, or - if none of those are visual media - image/video files
++    /// found by searching subdirectories (see [`Self::folder_sample_candidates`]). Visual
++    /// media outranks ordinary files, then newer files win with their path as a stable
++    /// tie-breaker. Candidates that can't be decoded are skipped in favor of the next-ranked
++    /// candidate.
++    fn folder_sample(
++        path: &Path,
++        thumbnail_size: u32,
++        max_mem: u64,
++        jobs: usize,
++        max_size_mb: u64,
++    ) -> Self {
++        let Some(candidates) = Self::folder_sample_candidates(path) else {
++            return Self::NotImage;
++        };
++
++        let mut sample = Vec::with_capacity(3);
++        for candidate in candidates {
++            if sample.len() == 3 {
++                break;
++            }
++            let entry = if candidate.visual {
++                match Self::new(
++                    &candidate.path,
++                    ItemMetadata::Path {
++                        metadata: candidate.metadata,
++                        children_opt: None,
++                    },
++                    candidate.mime.clone(),
++                    thumbnail_size,
++                    max_mem,
++                    jobs,
++                    max_size_mb,
++                ) {
++                    Self::Image(handle, _) => Some(FolderSampleEntry::Image(handle)),
++                    Self::Svg(handle) => Some(FolderSampleEntry::Icon(widget::icon::Handle {
++                        symbolic: false,
++                        data: widget::icon::Data::Svg(handle),
++                    })),
++                    _ => None,
++                }
++            } else {
++                Some(FolderSampleEntry::Icon(mime_icon(candidate.mime, thumbnail_size as u16)))
++            };
++            if let Some(entry) = entry {
++                sample.push(entry);
++            }
++        }
++        if sample.is_empty() { Self::NotImage } else { Self::FolderSample(sample) }
++    }
++
+     fn generate_thumbnail_external(
+         path: &Path,
+         mime: &mime::Mime,
+@@ -2294,6 +2588,169 @@ impl ItemThumbnail {
+ 
+         None
+     }
++
++    /// Extracts a frame near the midpoint of the video's duration (see [`Self::video_frame_at`]
++    /// for how close), or the first frame if the container doesn't support fast seeking (see
++    /// [`Self::format_supports_fast_seek`]) - for those formats a seek to an arbitrary
++    /// timestamp is either unsupported or only a rough, best-effort guess, so seeking towards
++    /// the midpoint isn't reliable at all.
++    #[cfg(feature = "video-thumbnails")]
++    fn video_middle_frame(path: &Path) -> Option<DynamicImage> {
++        let fraction = if Self::format_supports_fast_seek(path) {
++            0.5
++        } else {
++            0.0
++        };
++        Self::video_frame_at(path, fraction)
++    }
++
++    /// Whether `path`'s container format supports fast, index-based seeking to an arbitrary
++    /// timestamp. Determined from the `AVFMT_NOBINSEARCH`/`AVFMT_NOGENSEARCH` flags on the
++    /// probed input format: when both are set (e.g. ASF/WMV), ffmpeg's generic seek fallbacks
++    /// are disabled, meaning the demuxer either has no seek support or only a coarse,
++    /// non-frame-accurate one of its own - the common containers (MP4, Matroska/WebM, AVI,
++    /// MPEG-TS, etc.) all leave these flags unset.
++    #[cfg(feature = "video-thumbnails")]
++    fn format_supports_fast_seek(path: &Path) -> bool {
++        use ffmpeg_next as ffmpeg;
++
++        let Ok(input) = ffmpeg::format::input(path) else {
++            return false;
++        };
++
++        let flags = ffmpeg::format::flag::Flags::from_bits_truncate(unsafe {
++            (*input.format().as_ptr()).flags
++        });
++        !flags.contains(
++            ffmpeg::format::flag::Flags::NO_BINSEARCH | ffmpeg::format::flag::Flags::NO_GENSEARCH,
++        )
++    }
++
++    /// Extracts the frame nearest `fraction` (0.0 = start, 1.0 = end) of the video's duration,
++    /// by decoding directly with libav (via `ffmpeg-next`) rather than shelling out to the
++    /// `ffmpeg` binary. Only ever decodes a single frame - the one the seek lands on/near, i.e.
++    /// the nearest keyframe at or before the target - rather than decoding forward to the exact
++    /// timestamp, so the result can be up to one keyframe-interval short of the true target.
++    /// Returns `None` on any failure (unsupported format, no video stream, decode error, or a
++    /// seek target past the last decodable frame).
++    #[cfg(feature = "video-thumbnails")]
++    fn video_frame_at(path: &Path, fraction: f64) -> Option<DynamicImage> {
++        use ffmpeg_next as ffmpeg;
++
++        // safe to call repeatedly; only sets up libav's internal state once
++        if let Err(err) = ffmpeg::init() {
++            log::warn!("failed to initialize ffmpeg: {err}");
++            return None;
++        }
++
++        let mut input = match ffmpeg::format::input(path) {
++            Ok(input) => input,
++            Err(err) => {
++                log::debug!("ffmpeg failed to open {}: {}", path.display(), err);
++                return None;
++            }
++        };
++
++        let video_stream = input.streams().best(ffmpeg::media::Type::Video)?;
++        let video_stream_index = video_stream.index();
++        let mut decoder =
++            match ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())
++                .and_then(|context| context.decoder().video())
++            {
++                Ok(decoder) => decoder,
++                Err(err) => {
++                    log::debug!(
++                        "failed to open video decoder for {}: {}",
++                        path.display(),
++                        err
++                    );
++                    return None;
++                }
++            };
++
++        // seek to `fraction` of the container's duration (AV_TIME_BASE units)
++        //
++        // this only guarantees landing at or before the nearest preceding keyframe - it never
++        // lands exactly on an arbitrary target, since every frame between keyframes is coded
++        // as a delta against other frames and so can't be produced without decoding the whole
++        // reference chain back to a keyframe
++        //
++        // if the duration is unknown, fall back to decoding from the start of the file
++        let duration = input.duration();
++        let target_secs = fraction.clamp(0.0, 1.0) * (duration.max(0) as f64 / 1_000_000.0);
++        if duration > 0 {
++            let seek_target = (target_secs * 1_000_000.0) as i64;
++            if let Err(err) = input.seek(seek_target, ..) {
++                log::debug!(
++                    "failed to seek {} to {:.0}%: {}",
++                    path.display(),
++                    fraction * 100.0,
++                    err
++                );
++            }
++        }
++
++        // rather than paying to decode forward to the exact target timestamp (arbitrarily
++        // expensive for a container with sparse keyframes), just take the first frame the
++        // seek lands on/near
++        //
++        // that's always the nearest preceding keyframe, which is a good enough approximation
++        // of `fraction` for a thumbnail, and bounds every extraction to exactly one frame
++        // decode regardless of the container's keyframe interval
++        let mut decoded = ffmpeg::frame::Video::empty();
++        let mut found = false;
++        'search: for (stream, packet) in input.packets() {
++            if stream.index() != video_stream_index || decoder.send_packet(&packet).is_err() {
++                continue;
++            }
++
++            while decoder.receive_frame(&mut decoded).is_ok() {
++                if decoded.width() == 0 || decoded.height() == 0 {
++                    continue;
++                }
++                found = true;
++                break 'search;
++            }
++        }
++
++        if !found {
++            return None;
++        }
++
++        let (width, height) = (decoded.width(), decoded.height());
++        let mut scaler = ffmpeg::software::scaling::Context::get(
++            decoded.format(),
++            width,
++            height,
++            ffmpeg::format::Pixel::RGBA,
++            width,
++            height,
++            ffmpeg::software::scaling::Flags::BILINEAR,
++        )
++        .inspect_err(|err| {
++            log::warn!("failed to create scaler for {}: {}", path.display(), err);
++        })
++        .ok()?;
++
++        let mut rgba = ffmpeg::frame::Video::empty();
++        if let Err(err) = scaler.run(&decoded, &mut rgba) {
++            log::warn!("failed to scale frame from {}: {}", path.display(), err);
++            return None;
++        }
++
++        // the scaled frame's rows may be padded to a stride wider than the pixel data, so
++        // copy row-by-row into a tightly packed buffer
++        let stride = rgba.stride(0);
++        let data = rgba.data(0);
++        let row_bytes = width as usize * 4;
++        let mut buf = Vec::with_capacity(row_bytes * height as usize);
++        for row in 0..height as usize {
++            let start = row * stride;
++            buf.extend_from_slice(&data[start..start + row_bytes]);
++        }
++
++        image::RgbaImage::from_raw(width, height, buf).map(DynamicImage::ImageRgba8)
++    }
+ }
+ 
+ #[derive(Clone, Debug)]
+@@ -2369,6 +2826,137 @@ impl Item {
+         }
+     }
+ 
++    /// per-count layout for the folder content sample: `(x_frac, y_frac, rotation_deg,
++    /// scale)` for each sample, ordered front-to-back so index 0 (the most relevant
++    /// candidate) is largest, least rotated, and drawn on top
++    ///
++    /// offsets are a fraction of the icon size, applied around center; scale is
++    /// relative to the base card size, used to fan the samples out like loose photos
++    /// rather than lining them up in a flat row
++    fn folder_sample_fan_layout(n: usize) -> &'static [(f32, f32, f32, f32)] {
++        const ONE: [(f32, f32, f32, f32); 1] = [(0.0, 0.0, -4.0, 1.0)];
++        const TWO: [(f32, f32, f32, f32); 2] =
++            [(0.18, 0.09, 6.0, 1.0), (-0.18, -0.10, -10.0, 0.92)];
++        // index 0 (front) draws last/on top; index 2 draws first/on the bottom, so it
++        // gets pushed out furthest to stay clear of the other two despite being most
++        // covered
++        //
++        // scales are kept close so all three read as similarly sized
++        const THREE: [(f32, f32, f32, f32); 3] = [
++            (0.0, 0.16, -3.0, 1.0),
++            (0.38, -0.16, 13.0, 0.92),
++            (-0.40, -0.18, -13.0, 0.88),
++        ];
++        match n {
++            1 => &ONE,
++            2 => &TWO,
++            _ => &THREE,
++        }
++    }
++
++    /// render an icon, adding the folder's in-memory content sample when present
++    ///
++    /// keeping this as a widget composition (rather than a raster cache) lets the
++    /// underlying folder icon continue to come from the active icon theme
++    fn icon_view(
++        &self,
++        base: widget::icon::Handle,
++        size: u16,
++    ) -> Element<'static, Message> {
++        let ItemThumbnail::FolderSample(entries) = self
++            .thumbnail_opt
++            .as_ref()
++            .unwrap_or(&ItemThumbnail::NotImage)
++        else {
++            return widget::icon::icon(base)
++                .content_fit(ContentFit::Contain)
++                .size(size)
++                .into();
++        };
++
++        let mini_size = match entries.len() {
++            1 => (size * 3 / 4).max(10),
++            2 => (size * 3 / 5).max(10),
++            _ => (size * 2 / 5).max(10),
++        };
++        let layout = Self::folder_sample_fan_layout(entries.len());
++        let size_f = f32::from(size);
++
++        // pushed back-to-front so entries[0] (the most relevant candidate) paints on top
++        let cards = entries
++            .iter()
++            .cloned()
++            .zip(layout.iter().copied())
++            .rev()
++            .map(|(entry, (x_frac, y_frac, rotation_deg, scale))| {
++                let rotation = Rotation::Floating(Degrees(rotation_deg).into());
++                let content_size = f32::from(mini_size) * scale;
++                // the card's box must be big enough to fully contain the content once
++                // rotated, or the clip below would slice into the rotated image instead
++                // of just rounding the card's corners
++                let rad = rotation_deg.to_radians();
++                let bbox_scale = rad.cos().abs() + rad.sin().abs();
++                let box_size = content_size * bbox_scale + 2.0;
++                let base_x = (size_f - box_size) / 2.0 + x_frac * size_f;
++                let base_y = (size_f - box_size) / 2.0 + y_frac * size_f;
++
++                let content: Element<'static, Message> = match entry {
++                    FolderSampleEntry::Image(handle) => widget::image(handle)
++                        .width(Length::Fixed(content_size))
++                        .height(Length::Fixed(content_size))
++                        .content_fit(ContentFit::Contain)
++                        .rotation(rotation)
++                        .into(),
++                    FolderSampleEntry::Icon(handle) => {
++                        // themed mime-type icons bake in a lot of transparent padding
++                        // around the glyph; request the icon oversized and let the
++                        // card's clip crop it back down so it fills the card at
++                        // roughly the same visual scale as the image samples instead
++                        // of floating tiny in the middle of it
++                        let icon_size = (content_size * 4.0 / 3.0)
++                            .round()
++                            .clamp(1.0, f32::from(u16::MAX));
++                        widget::icon::icon(handle)
++                            .content_fit(ContentFit::Contain)
++                            .size(icon_size as u16)
++                            .rotation(rotation)
++                            .into()
++                    }
++                };
++                // box_size is padded beyond the actual content to safely contain the
++                // rotated image (see bbox_scale above), so a background/border here would
++                // just draw a frame around empty space; clip stays on purely as a safety
++                // clamp
++                let card = widget::container(content)
++                    .width(Length::Fixed(box_size))
++                    .height(Length::Fixed(box_size))
++                    .center(Length::Fill)
++                    .clip(true);
++                // `Pin` fills its parent (the size_f x size_f stack area) by default, and
++                // `.x()`/`.y()` position the card within that full area
++                //
++                // giving the pin itself a fixed width/height instead makes it compute the
++                // card's available layout space as `that size - position`, which goes
++                // negative (collapsing the content to nothing) once a card is offset
++                // further than its own box is wide
++                pin(card).x(base_x).y(base_y).into()
++            });
++
++        let mut children = vec![
++            widget::icon::icon(base)
++                .content_fit(ContentFit::Contain)
++                .size(size)
++                .into(),
++        ];
++        children.extend(cards);
++
++        Stack::with_children(children)
++            .width(Length::Fixed(size_f))
++            .height(Length::Fixed(size_f))
++            .clip(true)
++            .into()
++    }
++
+     fn preview(&self) -> Element<'_, Message> {
+         let spacing = cosmic::theme::spacing();
+         // This loads the image only if thumbnailing worked
+@@ -2394,6 +2982,7 @@ impl Item {
+                 .height(Length::Fixed(THUMBNAIL_SIZE as f32))
+                 .padding(spacing.space_xxs)
+                 .into(),
++            ItemThumbnail::FolderSample(_) => icon,
+         }
+     }
+ 
+@@ -2803,6 +3392,22 @@ pub struct Tab {
+     pub(crate) parent_item_opt: Option<Box<Item>>,
+     pub(crate) items_opt: Option<Vec<Item>>,
+     pub dnd_hovered: Option<(Location, Instant)>,
++    /// Path of the video item currently hovered in grid view, if its rotating scrub
++    /// thumbnail is active.
++    pub(crate) video_scrub_target: Option<PathBuf>,
++    /// Advances on each `Message::VideoScrubTick`; selects which decoded frame of the
++    /// active `video_scrub_target` item is currently displayed.
++    pub(crate) video_scrub_tick: usize,
++    /// Rotating grid-view hover thumbnails for `video_scrub_target`, one slot per
++    /// `VIDEO_SCRUB_FRACTIONS` entry, filled in lazily as each frame is decoded. Only one item
++    /// can be scrub-hovered at a time, so this lives on the tab rather than on every `Item`.
++    pub(crate) video_scrub_frames: RefCell<[Option<widget::icon::Handle>; VIDEO_SCRUB_FRAME_COUNT]>,
++    /// Set once a real layout event (`Resize`/`Scroll`/`ScrollTab`/`ScrollToFocused`/`Config`)
++    /// has refreshed folder-tile watches for the items currently loaded in this tab. Until
++    /// then, `Thumbnail` messages also trigger a refresh, guaranteeing visible folders get
++    /// watched even if no layout event fires first - but only until priming happens, so a
++    /// burst of thumbnail arrivals doesn't force a full watch recompute for each one.
++    pub(crate) folder_watches_primed: bool,
+     pub(crate) scrollable_id: widget::Id,
+     select_focus: Option<usize>,
+     select_range: Option<(usize, usize)>,
+@@ -2907,6 +3512,50 @@ pub fn parse_hidden_file(path: &PathBuf) -> Box<[String]> {
+ }
+ 
+ impl Tab {
++    /// The visible rectangle implied by the current scroll offset and item-view size, without
++    /// clamping the offset to the content height (see the clamped variants inlined at the grid
++    /// and list view builders, which need that clamping to stay correct immediately after a
++    /// resize).
++    fn unclamped_visible_rect(&self) -> Rectangle {
++        let point = self.scroll_opt.unwrap_or_default();
++        Rectangle::new(
++            Point::new(0.0, point.y),
++            self.size_opt.get().unwrap_or_else(|| Size::new(0.0, 0.0)),
++        )
++    }
++
++    /// Directories currently visible in the item view. App-level file watching uses these
++    /// paths to notice content changes that a non-recursive watch of the parent cannot see.
++    pub fn visible_folder_paths(&self) -> Vec<PathBuf> {
++        let visible = self.unclamped_visible_rect();
++        self.items_opt
++            .as_ref()
++            .into_iter()
++            .flatten()
++            .filter(|item| item.metadata.is_dir())
++            .filter(|item| item.rect_opt.get().is_some_and(|rect| rect.intersects(&visible)))
++            .filter_map(|item| item.path_opt().cloned())
++            .collect()
++    }
++
++    /// Clear the sample for a visible folder whose direct child changed. The normal thumbnail
++    /// subscription will rebuild it on the next frame while the tile remains visible.
++    pub fn invalidate_folder_sample_for_child(&mut self, child_path: &Path) -> bool {
++        let Some(parent) = child_path.parent() else {
++            return false;
++        };
++        let Some(items) = self.items_opt.as_mut() else {
++            return false;
++        };
++        let Some(item) = items.iter_mut().find(|item| {
++            item.metadata.is_dir() && item.path_opt().is_some_and(|path| path == parent)
++        }) else {
++            return false;
++        };
++        item.thumbnail_opt = None;
++        true
++    }
++
+     pub fn new(
+         location: Location,
+         config: TabConfig,
+@@ -2954,6 +3603,10 @@ impl Tab {
+             select_range: None,
+             clicked: None,
+             dnd_hovered: None,
++            video_scrub_target: None,
++            video_scrub_tick: 0,
++            video_scrub_frames: RefCell::new(Default::default()),
++            folder_watches_primed: false,
+             selected_clicked: false,
+             last_right_click: None,
+             search_context: None,
+@@ -3475,6 +4128,9 @@ impl Tab {
+         self.context_menu = None;
+         self.edit_location = None;
+         self.items_opt = None;
++        // the new location's items haven't been laid out yet, so folder-tile watches need
++        // re-priming once they have (see `folder_watches_primed`)
++        self.folder_watches_primed = false;
+         //TODO: remember scroll by location?
+         self.scroll_opt = None;
+         self.select_focus = None;
+@@ -4475,6 +5131,46 @@ impl Tab {
+                     item.highlighted = true;
+                 }
+             }
++            Message::VideoScrubStart(i) => {
++                self.watch_drag = true;
++                self.video_scrub_target = None;
++                if let Some(item) = self.items_opt.as_mut().and_then(|f| f.get_mut(i)) {
++                    item.highlighted = true;
++                    if item.mime.type_() == mime::VIDEO
++                        && let Some(path) = item.path_opt().cloned()
++                    {
++                        self.video_scrub_target = Some(path);
++                        self.video_scrub_tick = 0;
++                        let mut frames = self.video_scrub_frames.borrow_mut();
++                        *frames = Default::default();
++                        // the 50% frame is already decoded as the static grid thumbnail
++                        // (when thumbnailing succeeded) - reuse it instead of redecoding
++                        if matches!(item.thumbnail_opt, Some(ItemThumbnail::Image(..))) {
++                            frames[VIDEO_SCRUB_MIDDLE_INDEX] = Some(item.icon_handle_grid.clone());
++                        }
++                    }
++                }
++            }
++            Message::VideoScrubStop(i) => {
++                self.watch_drag = true;
++                if let Some(item) = self.items_opt.as_mut().and_then(|f| f.get_mut(i)) {
++                    item.highlighted = false;
++                }
++                self.video_scrub_target = None;
++                *self.video_scrub_frames.borrow_mut() = Default::default();
++            }
++            Message::VideoScrubFrame(path, idx, handle_opt) => {
++                // Guards against a frame decoded for a since-abandoned scrub target arriving
++                // late and landing in the current target's buffer
++                if self.video_scrub_target.as_deref() == Some(path.as_path())
++                    && let Some(handle) = handle_opt
++                {
++                    self.video_scrub_frames.borrow_mut()[idx] = Some(handle);
++                }
++            }
++            Message::VideoScrubTick => {
++                self.video_scrub_tick = self.video_scrub_tick.wrapping_add(1);
++            }
+             Message::Resize(viewport) => {
+                 // Scroll to ensure focused item still in view
+                 if self.viewport_opt.map(|v| v.size()) != Some(viewport.size())
+@@ -4691,16 +5387,16 @@ impl Tab {
+                         if item.location_opt.as_ref() == Some(&location) {
+                             let handle_opt = match &thumbnail {
+                                 ItemThumbnail::NotImage => None,
+-                                ItemThumbnail::Image(handle, _) => Some(widget::icon::Handle {
+-                                    symbolic: false,
+-                                    data: widget::icon::Data::Image(handle.clone()),
+-                                }),
++                                ItemThumbnail::Image(handle, _) => {
++                                    Some(icon_handle_from_image(handle.clone()))
++                                }
+                                 ItemThumbnail::Svg(handle) => Some(widget::icon::Handle {
+                                     symbolic: false,
+                                     data: widget::icon::Data::Svg(handle.clone()),
+                                 }),
+                                 //TODO: text thumbnails?
+                                 ItemThumbnail::Text(_text) => None,
++                                ItemThumbnail::FolderSample(_) => None,
+                             };
+                             if let Some(handle) = handle_opt {
+                                 item.icon_handle_grid.clone_from(&handle);
+@@ -5212,6 +5908,7 @@ impl Tab {
+                         .into(),
+                     );
+                 }
++                ItemThumbnail::FolderSample(_) => {}
+             }
+         }
+ 
+@@ -5797,12 +6494,32 @@ impl Tab {
+ 
+                 // Only build elements if visible (for performance)
+                 if item_rect.intersects(&visible_rect) {
++                    // while this item is the active hover-scrub target, cycle through
++                    // whichever of its decoded scrub frames are ready so far instead of
++                    // the static thumbnail
++                    let grid_icon_handle = if self.video_scrub_target.as_deref()
++                        == item.path_opt().map(PathBuf::as_path)
++                    {
++                        let frames = self.video_scrub_frames.borrow();
++                        let available = frames.iter().flatten().count();
++                        if available == 0 {
++                            item.icon_handle_grid.clone()
++                        } else {
++                            frames
++                                .iter()
++                                .flatten()
++                                .nth(self.video_scrub_tick % available)
++                                .cloned()
++                                .expect("index is within the just-counted available frames")
++                        }
++                    } else {
++                        item.icon_handle_grid.clone()
++                    };
++
+                     //TODO: one focus group per grid item (needs custom widget)
+                     let buttons: Vec<Element<Message>> = vec![
+                         widget::button::custom(
+-                            widget::icon::icon(item.icon_handle_grid.clone())
+-                                .content_fit(ContentFit::Contain)
+-                                .size(icon_sizes.grid()),
++                            item.icon_view(grid_icon_handle, icon_sizes.grid()),
+                         )
+                         .padding(space_xxxs)
+                         .class(button_style(
+@@ -5870,8 +6587,8 @@ impl Tab {
+                         .on_double_click(move |_| Message::DoubleClick(Some(i)))
+                         .on_release(move |_| Message::ClickRelease(Some(i)))
+                         .on_middle_press(move |_| Message::MiddleClick(i))
+-                        .on_enter(move || Message::HighlightActivate(i))
+-                        .on_exit(move || Message::HighlightDeactivate(i));
++                        .on_enter(move || Message::VideoScrubStart(i))
++                        .on_exit(move || Message::VideoScrubStop(i));
+                     grid_elements[row].push(Element::from(mouse_area));
+                 } else {
+                     // Add a spacer if the row is empty, so scroll works
+@@ -5966,9 +6683,7 @@ impl Tab {
+                     if *row == r && *col == c {
+                         let buttons = vec![
+                             widget::button::custom(
+-                                widget::icon::icon(item.icon_handle_grid.clone())
+-                                    .content_fit(ContentFit::Contain)
+-                                    .size(icon_sizes.grid()),
++                                item.icon_view(item.icon_handle_grid.clone(), icon_sizes.grid()),
+                             )
+                             .on_press(Message::Click(Some(*i)))
+                             .padding(space_xxxs)
+@@ -6187,10 +6902,7 @@ impl Tab {
+ 
+                     let row = if condensed {
+                         widget::row::with_children([
+-                            widget::icon::icon(item.icon_handle_list_condensed.clone())
+-                                .content_fit(ContentFit::Contain)
+-                                .size(icon_size)
+-                                .into(),
++                            item.icon_view(item.icon_handle_list_condensed.clone(), icon_size),
+                             widget::column::with_children([
+                                 Item::list_display_name(item.display_name.clone()).into(),
+                                 //TODO: translate?
+@@ -6204,10 +6916,7 @@ impl Tab {
+                         .spacing(space_xxs)
+                     } else if is_search {
+                         widget::row::with_children([
+-                            widget::icon::icon(item.icon_handle_list_condensed.clone())
+-                                .content_fit(ContentFit::Contain)
+-                                .size(icon_size)
+-                                .into(),
++                            item.icon_view(item.icon_handle_list_condensed.clone(), icon_size),
+                             widget::column::with_children([
+                                 Item::list_display_name(item.display_name.clone()).into(),
+                                 widget::text::caption(match item.path_opt() {
+@@ -6230,10 +6939,7 @@ impl Tab {
+                         .spacing(space_xxs)
+                     } else {
+                         widget::row::with_children([
+-                            widget::icon::icon(item.icon_handle_list.clone())
+-                                .content_fit(ContentFit::Contain)
+-                                .size(icon_size)
+-                                .into(),
++                            item.icon_view(item.icon_handle_list.clone(), icon_size),
+                             Item::list_display_name(item.display_name.clone())
+                                 .width(Length::Fill)
+                                 .into(),
+@@ -6299,10 +7005,7 @@ impl Tab {
+                             )
+                         } else if condensed {
+                             widget::row::with_children([
+-                                widget::icon::icon(item.icon_handle_list_condensed.clone())
+-                                    .content_fit(ContentFit::Contain)
+-                                    .size(icon_size)
+-                                    .into(),
++                                item.icon_view(item.icon_handle_list_condensed.clone(), icon_size),
+                                 widget::column::with_children([
+                                     Item::list_display_name(item.display_name.clone()).into(),
+                                     //TODO: translate?
+@@ -6316,10 +7019,7 @@ impl Tab {
+                             .into()
+                         } else if is_search {
+                             widget::row::with_children([
+-                                widget::icon::icon(item.icon_handle_list_condensed.clone())
+-                                    .content_fit(ContentFit::Contain)
+-                                    .size(icon_size)
+-                                    .into(),
++                                item.icon_view(item.icon_handle_list_condensed.clone(), icon_size),
+                                 widget::column::with_children([
+                                     Item::list_display_name(item.display_name.clone()).into(),
+                                     widget::text::caption(match item.path_opt() {
+@@ -6342,10 +7042,7 @@ impl Tab {
+                             .into()
+                         } else {
+                             widget::row::with_children([
+-                                widget::icon::icon(item.icon_handle_list.clone())
+-                                    .content_fit(ContentFit::Contain)
+-                                    .size(icon_size)
+-                                    .into(),
++                                item.icon_view(item.icon_handle_list.clone(), icon_size),
+                                 Item::list_display_name(item.display_name.clone())
+                                     .width(Length::Fill)
+                                     .into(),
+@@ -6938,15 +7635,7 @@ impl Tab {
+         let mut subscriptions = Vec::with_capacity(jobs + 3);
+ 
+         if let Some(items) = &self.items_opt {
+-            //TODO: move to function
+-            let visible_rect = {
+-                let point = match self.scroll_opt {
+-                    Some(offset) => Point::new(0.0, offset.y),
+-                    None => Point::new(0.0, 0.0),
+-                };
+-                let size = self.size_opt.get().unwrap_or_else(|| Size::new(0.0, 0.0));
+-                Rectangle::new(point, size)
+-            };
++            let visible_rect = self.unclamped_visible_rect();
+ 
+             for item in items {
+                 if item.thumbnail_opt.is_some() {
+@@ -7169,29 +7858,138 @@ impl Tab {
+                     }
+                 }
+             }
+-        }
+ 
+-        // Load search items incrementally
+-        if let Location::Search(search_location, term, show_hidden, start) = &self.location {
+-            let location = self.location.clone();
+-            let search_location = search_location.clone();
+-            let term = term.clone();
+-            let show_hidden = *show_hidden;
+-            let start = *start;
+-            #[derive(Debug, Hash, Clone)]
+-            struct Wrapper {
+-                location: Location,
+-                search_location: SearchLocation,
+-                term: String,
+-                show_hidden: bool,
+-                start: Instant,
+-            }
++            // rotating video thumbnails (grid view only): decode the still-missing
++            // VIDEO_SCRUB_FRACTIONS frames for the currently hovered video, and once at
++            // least one is ready, cycle through them on a timer
++            #[cfg(feature = "video-thumbnails")]
++            if let Some(target_path) = &self.video_scrub_target
++                && items
++                    .iter()
++                    .any(|item| item.path_opt().map(PathBuf::as_path) == Some(target_path))
++            {
++                for (idx, &fraction) in VIDEO_SCRUB_FRACTIONS.iter().enumerate() {
++                    if self.video_scrub_frames.borrow()[idx].is_some() {
++                        continue;
++                    }
+ 
+-            subscriptions.push(Subscription::run_with(
+-                Wrapper {
+-                    location: location.clone(),
+-                    search_location: search_location.clone(),
+-                    term: term.clone(),
++                    #[derive(Clone)]
++                    struct Wrapper {
++                        path: PathBuf,
++                        idx: usize,
++                        fraction: f64,
++                    }
++                    impl Hash for Wrapper {
++                        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
++                            self.path.hash(state);
++                            self.idx.hash(state);
++                        }
++                    }
++
++                    subscriptions.push(Subscription::run_with(
++                        Wrapper {
++                            path: target_path.clone(),
++                            idx,
++                            fraction,
++                        },
++                        |wrapper| {
++                            let Wrapper { path, idx, fraction } = wrapper.clone();
++                            stream::channel(
++                                1,
++                                move |mut output: futures::channel::mpsc::Sender<_>| async move {
++                                    let message = {
++                                        let path = path.clone();
++                                        let _permit = THUMB_SEMAPHORE.acquire().await.unwrap();
++                                        tokio::task::spawn_blocking(move || {
++                                            let handle_opt =
++                                                ItemThumbnail::video_frame_at(&path, fraction).map(
++                                                    |image| {
++                                                        let scaled = image
++                                                            .thumbnail(THUMBNAIL_SIZE, THUMBNAIL_SIZE)
++                                                            .into_rgba8();
++                                                        icon_handle_from_image(
++                                                            widget::image::Handle::from_rgba(
++                                                                scaled.width(),
++                                                                scaled.height(),
++                                                                scaled.into_raw(),
++                                                            ),
++                                                        )
++                                                    },
++                                                );
++                                            Message::VideoScrubFrame(path, idx, handle_opt)
++                                        })
++                                        .await
++                                        .unwrap()
++                                    };
++
++                                    match output.send(message).await {
++                                        Ok(()) => {}
++                                        Err(err) => {
++                                            log::warn!(
++                                                "failed to send video scrub frame {} for {}: {}",
++                                                idx,
++                                                path.display(),
++                                                err
++                                            );
++                                        }
++                                    }
++
++                                    std::future::pending().await
++                                },
++                            )
++                        },
++                    ));
++                }
++
++                if self.video_scrub_frames.borrow().iter().any(Option::is_some) {
++                    #[derive(Clone, Hash)]
++                    struct TickWrapper {
++                        path: PathBuf,
++                    }
++                    subscriptions.push(Subscription::run_with(
++                        TickWrapper {
++                            path: target_path.clone(),
++                        },
++                        |wrapper| {
++                            let _ = wrapper.clone();
++                            stream::channel(
++                                1,
++                                move |mut output: futures::channel::mpsc::Sender<_>| async move {
++                                    loop {
++                                        tokio::time::sleep(VIDEO_SCRUB_TICK).await;
++                                        if output.send(Message::VideoScrubTick).await.is_err() {
++                                            break;
++                                        }
++                                    }
++                                },
++                            )
++                        },
++                    ));
++                }
++            }
++        }
++
++        // Load search items incrementally
++        if let Location::Search(search_location, term, show_hidden, start) = &self.location {
++            let location = self.location.clone();
++            let search_location = search_location.clone();
++            let term = term.clone();
++            let show_hidden = *show_hidden;
++            let start = *start;
++            #[derive(Debug, Hash, Clone)]
++            struct Wrapper {
++                location: Location,
++                search_location: SearchLocation,
++                term: String,
++                show_hidden: bool,
++                start: Instant,
++            }
++
++            subscriptions.push(Subscription::run_with(
++                Wrapper {
++                    location: location.clone(),
++                    search_location: search_location.clone(),
++                    term: term.clone(),
+                     show_hidden,
+                     start,
+                 },
+@@ -7420,7 +8218,7 @@ fn text_editor_class(
+ 
+ #[cfg(test)]
+ mod tests {
+-    use std::path::PathBuf;
++    use std::path::{Path, PathBuf};
+     use std::{fs, io};
+ 
+     use cosmic::iced::mouse::ScrollDelta;
+@@ -7432,13 +8230,15 @@ mod tests {
+     use test_log::test;
+ 
+     use super::{
+-        ItemMetadata, ItemThumbnail, Location, Message, Tab, respond_to_scroll_direction, scan_path,
++        FolderSampleEntry, ItemMetadata, ItemThumbnail, Location, Message, Point, Rectangle, Size,
++        Tab, respond_to_scroll_direction, scan_path,
+     };
+     use crate::app::test_utils::{
+         NAME_LEN, NUM_DIRS, NUM_FILES, NUM_HIDDEN, NUM_NESTED, assert_eq_tab_path, empty_fs,
+         eq_path_item, filter_dirs, read_dir_sorted, simple_fs, tab_click_new,
+     };
+     use crate::config::{IconSizes, TabConfig, ThumbCfg};
++    use crate::mime_icon::mime_for_path;
+ 
+     // Boilerplate for tab tests. Checks if simulated clicks selected items.
+     fn tab_selects_item(
+@@ -7936,4 +8736,834 @@ mod tests {
+         }
+         Ok(())
+     }
++
++    #[cfg(feature = "video-thumbnails")]
++    #[test]
++    fn item_thumbnail_video_uses_ffmpeg_middle_frame() -> io::Result<()> {
++        // the `ffmpeg` binary is only used here to generate a test fixture; the
++        // production code path decodes directly via the `ffmpeg-next` bindings
++        if std::process::Command::new("ffmpeg")
++            .arg("-version")
++            .output()
++            .is_err()
++        {
++            eprintln!("skipping test: ffmpeg binary not installed");
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        let path = dir.path().join("test.mp4");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=2:size=64x48:rate=10",
++                "-c:v",
++                "libx264",
++                "-pix_fmt",
++                "yuv420p",
++                "-y",
++            ])
++            .arg(&path)
++            .status()?;
++        assert!(status.success(), "failed to generate test video");
++
++        let metadata = fs::metadata(&path)?;
++        let item_metadata = ItemMetadata::Path {
++            metadata,
++            children_opt: None,
++        };
++        let thumb = ItemThumbnail::new(
++            &path,
++            item_metadata,
++            "video/mp4".parse().unwrap(),
++            128,
++            100 * 1024 * 1024,
++            1,
++            100,
++        );
++        match &thumb {
++            ItemThumbnail::Image(_, dims) => {
++                assert_eq!(*dims, Some((64, 48)), "unexpected extracted frame size");
++            }
++            _ => panic!("expected Image thumbnail from ffmpeg, got {:?}", thumb),
++        }
++        Ok(())
++    }
++
++    #[cfg(feature = "video-thumbnails")]
++    #[test]
++    fn item_thumbnail_video_scrub_frames_differ_across_video() -> io::Result<()> {
++        if std::process::Command::new("ffmpeg")
++            .arg("-version")
++            .output()
++            .is_err()
++        {
++            eprintln!("skipping test: ffmpeg binary not installed");
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        let path = dir.path().join("test.mp4");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=10:size=64x48:rate=10",
++                "-c:v",
++                "libx264",
++                "-pix_fmt",
++                "yuv420p",
++                // a short keyframe interval so the 10%/90% marks land on distinct keyframes -
++                // extraction now just takes the frame nearest the seek target, so without this
++                // a default-GOP encode would only have one keyframe across a 10s/10fps clip
++                "-g",
++                "10",
++                "-y",
++            ])
++            .arg(&path)
++            .status()?;
++        assert!(status.success(), "failed to generate test video");
++
++        // VIDEO_SCRUB_FRACTIONS samples the 10%/30%/50%/70%/90% marks; check the two
++        // extremes decode to valid, differently-timestamped frames of the same size
++        let frame_10 = ItemThumbnail::video_frame_at(&path, 0.1).expect("expected frame at 10%");
++        let frame_90 = ItemThumbnail::video_frame_at(&path, 0.9).expect("expected frame at 90%");
++        assert_eq!((frame_10.width(), frame_10.height()), (64, 48));
++        assert_eq!((frame_90.width(), frame_90.height()), (64, 48));
++        assert_ne!(
++            frame_10.to_rgba8().into_raw(),
++            frame_90.to_rgba8().into_raw(),
++            "frames at 10% and 90% of a 10s video should not be pixel-identical"
++        );
++        Ok(())
++    }
++
++    #[cfg(feature = "video-thumbnails")]
++    #[test]
++    fn item_thumbnail_video_middle_frame_falls_back_on_slow_seek_format() -> io::Result<()> {
++        if std::process::Command::new("ffmpeg")
++            .arg("-version")
++            .output()
++            .is_err()
++        {
++            eprintln!("skipping test: ffmpeg binary not installed");
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++
++        // MP4/H.264 supports fast, index-based seeking - the static thumbnail should be a
++        // frame near the middle keyframe, distinct from the first frame
++        let mp4_path = dir.path().join("test.mp4");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=10:size=64x48:rate=10",
++                "-c:v",
++                "libx264",
++                "-pix_fmt",
++                "yuv420p",
++                // a short keyframe interval so the 0%/50% marks land on distinct keyframes
++                "-g",
++                "10",
++                "-y",
++            ])
++            .arg(&mp4_path)
++            .status()?;
++        assert!(status.success(), "failed to generate mp4 test video");
++        assert!(
++            ItemThumbnail::format_supports_fast_seek(&mp4_path),
++            "mp4 should report fast seek support"
++        );
++        let mp4_first = ItemThumbnail::video_frame_at(&mp4_path, 0.0)
++            .expect("expected first frame for mp4");
++        let mp4_middle =
++            ItemThumbnail::video_middle_frame(&mp4_path).expect("expected middle frame for mp4");
++        assert_ne!(
++            mp4_first.to_rgba8().into_raw(),
++            mp4_middle.to_rgba8().into_raw(),
++            "mp4 static thumbnail should be a frame near the middle, not the first frame"
++        );
++
++        // ASF/WMV disables ffmpeg's generic seek fallbacks (AVFMT_NOBINSEARCH |
++        // AVFMT_NOGENSEARCH), so the static thumbnail should fall back to the first frame
++        let wmv_path = dir.path().join("test.wmv");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=10:size=64x48:rate=10",
++                "-c:v",
++                "msmpeg4v3",
++                "-y",
++            ])
++            .arg(&wmv_path)
++            .status()?;
++        assert!(status.success(), "failed to generate wmv test video");
++        assert!(
++            !ItemThumbnail::format_supports_fast_seek(&wmv_path),
++            "asf/wmv should report no fast seek support"
++        );
++        let wmv_first = ItemThumbnail::video_frame_at(&wmv_path, 0.0)
++            .expect("expected first frame for wmv");
++        let wmv_middle =
++            ItemThumbnail::video_middle_frame(&wmv_path).expect("expected fallback frame for wmv");
++        assert_eq!(
++            wmv_first.to_rgba8().into_raw(),
++            wmv_middle.to_rgba8().into_raw(),
++            "wmv static thumbnail should fall back to the first frame"
++        );
++
++        Ok(())
++    }
++
++    #[cfg(feature = "video-thumbnails")]
++    #[test]
++    fn item_thumbnail_video_sparse_keyframe_never_decodes_past_the_keyframe() -> io::Result<()> {
++        if std::process::Command::new("ffmpeg")
++            .arg("-version")
++            .output()
++            .is_err()
++        {
++            eprintln!("skipping test: ffmpeg binary not installed");
++            return Ok(());
++        }
++
++        // a single keyframe for the whole file (typical of some WebM/VP8/VP9 screen
++        // recordings) means every seek lands on frame 0
++        //
++        // since extraction now just takes the first frame the seek lands on rather than
++        // decoding forward towards the exact target, every fraction should resolve to that
++        // same frame - and cheaply, regardless of how far into a long file the target
++        // nominally is
++        let dir = TempDir::new()?;
++        let path = dir.path().join("sparse_keyframe.webm");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=15:size=64x48:rate=30",
++                "-c:v",
++                "libvpx-vp9",
++                "-deadline",
++                "realtime",
++                "-cpu-used",
++                "8",
++                "-g",
++                "100000",
++                "-y",
++            ])
++            .arg(&path)
++            .status()?;
++        assert!(status.success(), "failed to generate test video");
++        assert_eq!(
++            std::process::Command::new("ffprobe")
++                .args([
++                    "-v", "error", "-select_streams", "v:0", "-show_entries",
++                    "frame=pict_type", "-of", "csv=p=0",
++                ])
++                .arg(&path)
++                .output()?
++                .stdout
++                .iter()
++                .filter(|&&b| b == b'I')
++                .count(),
++            1,
++            "test fixture should have exactly one keyframe"
++        );
++
++        let first = ItemThumbnail::video_frame_at(&path, 0.0).expect("expected first frame");
++        let middle = ItemThumbnail::video_frame_at(&path, 0.5).expect("expected frame at 50%");
++        let near_end = ItemThumbnail::video_frame_at(&path, 0.9).expect("expected frame at 90%");
++
++        // all three land on the sole keyframe, so they should be pixel-identical to the first
++        // frame - proving extraction never walks forward decoding intervening frames
++        assert_eq!(
++            first.to_rgba8().into_raw(),
++            middle.to_rgba8().into_raw(),
++            "50% extraction on a single-keyframe file should match the first frame"
++        );
++        assert_eq!(
++            first.to_rgba8().into_raw(),
++            near_end.to_rgba8().into_raw(),
++            "90% extraction on a single-keyframe file should match the first frame"
++        );
++
++        Ok(())
++    }
++
++    // --- Folder sample tests ------------------------------------------------
++
++    fn write_test_image(path: &Path, width: u32, height: u32) -> io::Result<()> {
++        let img = image::RgbaImage::from_pixel(width, height, image::Rgba([255, 0, 0, 255]));
++        img.save(path).map_err(io::Error::other)
++    }
++
++    /// A file that sniffs as `image/png` (so it ranks as visual media) but is structurally
++    /// invalid, so decoding it fails. Used to exercise the "skip and try the next candidate"
++    /// fallback path.
++    fn write_corrupt_png(path: &Path) -> io::Result<()> {
++        let mut data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
++        data.extend_from_slice(b"not a real png chunk stream - just garbage to fail decoding");
++        fs::write(path, data)
++    }
++
++    fn folder_item_thumbnail(path: &Path) -> ItemThumbnail {
++        let metadata = fs::metadata(path).expect("dir should exist");
++        ItemThumbnail::new(
++            path,
++            ItemMetadata::Path {
++                metadata,
++                children_opt: None,
++            },
++            "inode/directory".parse().unwrap(),
++            128,
++            100 * 1024 * 1024,
++            1,
++            100,
++        )
++    }
++
++    /// Folder-sample ranking depends on `mime_for_path` recognizing images, the same as the
++    /// existing single-file image thumbnailer does. Some sandboxed build/test environments
++    /// (e.g. certain Nix build sandboxes) don't have a system shared-mime-info database
++    /// available, so even a plain, correctly-named PNG sniffs as a generic non-image mime type
++    /// there. Tests that need image classification to work check this first and skip rather
++    /// than asserting against environment-dependent behavior neither they nor the feature can
++    /// do anything about.
++    fn mime_sniffing_recognizes_images() -> io::Result<bool> {
++        let probe_dir = TempDir::new()?;
++        let probe = probe_dir.path().join("probe.png");
++        write_test_image(&probe, 1, 1)?;
++        let metadata = fs::metadata(&probe)?;
++        Ok(mime_for_path(&probe, Some(&metadata), false).type_() == mime::IMAGE)
++    }
++
++    #[test]
++    fn folder_sample_direct_children_only_non_hidden_regular_files() -> io::Result<()> {
++        let dir = TempDir::new()?;
++        fs::write(dir.path().join("visible.txt"), "a")?;
++        fs::write(dir.path().join(".hidden.txt"), "b")?;
++        fs::create_dir(dir.path().join("subdir"))?;
++        fs::write(dir.path().join("subdir").join("nested.txt"), "c")?;
++
++        let (candidates, subdirs) = ItemThumbnail::folder_sample_direct_children(dir.path())
++            .expect("readable dir should return candidates");
++        let names: Vec<_> = candidates
++            .iter()
++            .map(|c| c.path.file_name().unwrap().to_owned())
++            .collect();
++        assert_eq!(
++            names,
++            vec![std::ffi::OsString::from("visible.txt")],
++            "hidden files and nested files should be excluded from the candidate list"
++        );
++        assert_eq!(
++            subdirs,
++            vec![dir.path().join("subdir")],
++            "non-hidden subdirectories should be reported separately for deeper searches"
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_direct_children_honors_dot_hidden_file() -> io::Result<()> {
++        let dir = TempDir::new()?;
++        fs::write(dir.path().join("visible.txt"), "a")?;
++        fs::write(dir.path().join("private.txt"), "b")?;
++        fs::write(dir.path().join(".hidden"), "private.txt\n")?;
++
++        let (candidates, _subdirs) = ItemThumbnail::folder_sample_direct_children(dir.path())
++            .expect("readable dir should return candidates");
++        let names: Vec<_> = candidates
++            .iter()
++            .map(|c| c.path.file_name().unwrap().to_owned())
++            .collect();
++        assert_eq!(
++            names,
++            vec![std::ffi::OsString::from("visible.txt")],
++            "a file listed in .hidden should be excluded from folder-sample candidates, \
++             matching the main item listing's hiding rules"
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_direct_children_rank_visual_media_ahead_of_other_files() -> io::Result<()> {
++        if !mime_sniffing_recognizes_images()? {
++            eprintln!(
++                "skipping test: environment's mime database doesn't recognize images (e.g. sandboxed build)"
++            );
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        let image_path = dir.path().join("photo.png");
++        let text_path = dir.path().join("notes.txt");
++        write_test_image(&image_path, 4, 4)?;
++        fs::write(&text_path, "notes")?;
++        // the text file is strictly newer, so ranking the image first proves visual media
++        // outranks recency rather than the image merely winning on modification time
++        filetime::set_file_mtime(&text_path, filetime::FileTime::from_unix_time(2_000_000_000, 0))?;
++        filetime::set_file_mtime(
++            &image_path,
++            filetime::FileTime::from_unix_time(1_000_000_000, 0),
++        )?;
++
++        let (candidates, _subdirs) =
++            ItemThumbnail::folder_sample_direct_children(dir.path()).expect("readable dir");
++        assert_eq!(candidates.len(), 2);
++        assert_eq!(
++            candidates[0].path, image_path,
++            "visual media should rank ahead of a newer non-visual file"
++        );
++        assert!(candidates[0].visual);
++        assert!(!candidates[1].visual);
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_direct_children_order_newest_first_then_by_path() -> io::Result<()> {
++        let dir = TempDir::new()?;
++        let older = dir.path().join("b_older.txt");
++        let newer = dir.path().join("a_newer.txt");
++        let tied_a = dir.path().join("tied_a.txt");
++        let tied_b = dir.path().join("tied_b.txt");
++        for path in [&older, &newer, &tied_a, &tied_b] {
++            fs::write(path, "x")?;
++        }
++
++        filetime::set_file_mtime(&older, filetime::FileTime::from_unix_time(1_000_000_000, 0))?;
++        filetime::set_file_mtime(&newer, filetime::FileTime::from_unix_time(2_000_000_000, 0))?;
++        let tied_time = filetime::FileTime::from_unix_time(1_500_000_000, 0);
++        filetime::set_file_mtime(&tied_a, tied_time)?;
++        filetime::set_file_mtime(&tied_b, tied_time)?;
++
++        let (candidates, _subdirs) =
++            ItemThumbnail::folder_sample_direct_children(dir.path()).expect("readable dir");
++        let paths: Vec<_> = candidates.into_iter().map(|c| c.path).collect();
++        assert_eq!(
++            paths,
++            vec![newer, tied_a, tied_b, older],
++            "expected newest-first ordering, with equal modification times broken by pathname"
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_deep_scan_finds_visual_media_at_max_depth() -> io::Result<()> {
++        if !mime_sniffing_recognizes_images()? {
++            eprintln!(
++                "skipping test: environment's mime database doesn't recognize images (e.g. sandboxed build)"
++            );
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        fs::write(dir.path().join("readme.txt"), "no visual media here")?;
++        let nested_dir = dir.path().join("a").join("b");
++        fs::create_dir_all(&nested_dir)?;
++        // direct children count as depth 1, so `a/b/deep.png` is depth 3, the deepest level
++        // `FOLDER_SAMPLE_MAX_DEPTH` allows
++        let deep_image = nested_dir.join("deep.png");
++        write_test_image(&deep_image, 4, 4)?;
++
++        match folder_item_thumbnail(dir.path()) {
++            ItemThumbnail::FolderSample(entries) => {
++                assert_eq!(entries.len(), 1);
++                assert!(
++                    matches!(entries[0], FolderSampleEntry::Image(_)),
++                    "expected the deep image to be decoded into the sample, got {:?}",
++                    entries[0]
++                );
++            }
++            other => panic!("expected FolderSample with the deep image, got {other:?}"),
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_deep_scan_ignores_visual_media_beyond_max_depth() -> io::Result<()> {
++        if !mime_sniffing_recognizes_images()? {
++            eprintln!(
++                "skipping test: environment's mime database doesn't recognize images (e.g. sandboxed build)"
++            );
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        // depth 4 (one level past `FOLDER_SAMPLE_MAX_DEPTH`), so this pins the boundary that
++        // the deep scan must not cross
++        let too_deep_dir = dir.path().join("a").join("b").join("c");
++        fs::create_dir_all(&too_deep_dir)?;
++        write_test_image(&too_deep_dir.join("too_deep.png"), 4, 4)?;
++
++        let thumb = folder_item_thumbnail(dir.path());
++        assert!(
++            matches!(thumb, ItemThumbnail::NotImage),
++            "visual media beyond FOLDER_SAMPLE_MAX_DEPTH should not be found, got {thumb:?}"
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_direct_visual_media_skips_deep_scan() -> io::Result<()> {
++        if !mime_sniffing_recognizes_images()? {
++            eprintln!(
++                "skipping test: environment's mime database doesn't recognize images (e.g. sandboxed build)"
++            );
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        let direct_image = dir.path().join("direct.png");
++        write_test_image(&direct_image, 4, 4)?;
++        let nested_dir = dir.path().join("a");
++        fs::create_dir(&nested_dir)?;
++        write_test_image(&nested_dir.join("nested.png"), 4, 4)?;
++
++        match folder_item_thumbnail(dir.path()) {
++            ItemThumbnail::FolderSample(entries) => {
++                assert_eq!(
++                    entries.len(),
++                    1,
++                    "a folder with its own visual media should not also pull in nested media"
++                );
++            }
++            other => panic!("expected FolderSample with the direct image, got {other:?}"),
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_skips_undecodable_visual_candidate_for_next_ranked_file() -> io::Result<()> {
++        let dir = TempDir::new()?;
++        let corrupt_image = dir.path().join("broken.png");
++        let fallback_file = dir.path().join("readme.txt");
++        write_corrupt_png(&corrupt_image)?;
++        fs::write(&fallback_file, "hello")?;
++
++        // confirm the premise: this file really is classified as visual media, so its absence
++        // from the sample demonstrates a decode failure being skipped, not misclassification
++        //
++        // some sandboxed environments lack a system mime database entirely (see
++        // `mime_sniffing_recognizes_images`), in which case this file sniffs as a generic
++        // non-image mime type and the scenario this test targets can't be exercised here
++        let metadata = fs::metadata(&corrupt_image)?;
++        if mime_for_path(&corrupt_image, Some(&metadata), false).type_() != mime::IMAGE {
++            eprintln!(
++                "skipping test: environment's mime database doesn't recognize images (e.g. sandboxed build)"
++            );
++            return Ok(());
++        }
++
++        match folder_item_thumbnail(dir.path()) {
++            ItemThumbnail::FolderSample(entries) => {
++                assert_eq!(
++                    entries.len(),
++                    1,
++                    "the undecodable image should be skipped entirely, not counted"
++                );
++                assert!(
++                    matches!(entries[0], FolderSampleEntry::Icon(_)),
++                    "expected the fallback file's MIME icon, got {:?}",
++                    entries[0]
++                );
++            }
++            other => panic!("expected FolderSample with the fallback file, got {other:?}"),
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_all_candidates_undecodable_falls_back_to_not_image() -> io::Result<()> {
++        let dir = TempDir::new()?;
++        let corrupt_image = dir.path().join("broken.png");
++        write_corrupt_png(&corrupt_image)?;
++
++        // this test exercises the corrupt image being recognized as (undecodable) visual
++        // media; without mime sniffing it would just be an ordinary file with a working icon
++        let metadata = fs::metadata(&corrupt_image)?;
++        if mime_for_path(&corrupt_image, Some(&metadata), false).type_() != mime::IMAGE {
++            eprintln!(
++                "skipping test: environment's mime database doesn't recognize images (e.g. sandboxed build)"
++            );
++            return Ok(());
++        }
++
++        let thumb = folder_item_thumbnail(dir.path());
++        assert!(
++            matches!(thumb, ItemThumbnail::NotImage),
++            "a folder whose only candidate can't be decoded should keep the standard folder icon, got {thumb:?}"
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_empty_dir_falls_back_to_not_image() -> io::Result<()> {
++        let dir = empty_fs()?;
++        let thumb = folder_item_thumbnail(dir.path());
++        assert!(
++            matches!(thumb, ItemThumbnail::NotImage),
++            "an empty folder should keep the standard folder icon, got {thumb:?}"
++        );
++        Ok(())
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn folder_sample_unreadable_dir_falls_back_to_not_image() -> io::Result<()> {
++        use std::os::unix::fs::PermissionsExt;
++
++        if unsafe { libc::geteuid() } == 0 {
++            eprintln!("skipping test: running as root ignores directory permissions");
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        fs::write(dir.path().join("secret.txt"), "x")?;
++        let mut perms = fs::metadata(dir.path())?.permissions();
++        perms.set_mode(0o000);
++        fs::set_permissions(dir.path(), perms.clone())?;
++
++        let thumb = folder_item_thumbnail(dir.path());
++
++        // restore permissions before the TempDir goes out of scope so cleanup can remove it
++        perms.set_mode(0o755);
++        fs::set_permissions(dir.path(), perms)?;
++
++        assert!(
++            matches!(thumb, ItemThumbnail::NotImage),
++            "an unreadable folder should keep the standard folder icon, got {thumb:?}"
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_image_folder_caps_at_three_entries() -> io::Result<()> {
++        if !mime_sniffing_recognizes_images()? {
++            eprintln!(
++                "skipping test: environment's mime database doesn't recognize images (e.g. sandboxed build)"
++            );
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        for i in 0..4 {
++            write_test_image(&dir.path().join(format!("img{i}.png")), 4, 4)?;
++        }
++
++        match folder_item_thumbnail(dir.path()) {
++            ItemThumbnail::FolderSample(entries) => {
++                assert_eq!(entries.len(), 3, "folder sample should cap at three entries");
++                assert!(
++                    entries
++                        .iter()
++                        .all(|e| matches!(e, FolderSampleEntry::Image(_))),
++                    "all four candidates are images, so every kept entry should be an Image, got {entries:?}"
++                );
++            }
++            other => panic!("expected FolderSample, got {other:?}"),
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn folder_sample_regular_files_only_produces_icon_entries() -> io::Result<()> {
++        let dir = TempDir::new()?;
++        fs::write(dir.path().join("a.txt"), "a")?;
++        fs::write(dir.path().join("b.pdf"), "b")?;
++
++        match folder_item_thumbnail(dir.path()) {
++            ItemThumbnail::FolderSample(entries) => {
++                assert_eq!(entries.len(), 2);
++                assert!(
++                    entries
++                        .iter()
++                        .all(|e| matches!(e, FolderSampleEntry::Icon(_))),
++                    "regular files should be represented by their MIME icon, got {entries:?}"
++                );
++            }
++            other => panic!("expected FolderSample, got {other:?}"),
++        }
++        Ok(())
++    }
++
++    #[cfg(feature = "video-thumbnails")]
++    #[test]
++    fn folder_sample_video_uses_approximate_middle_frame() -> io::Result<()> {
++        if std::process::Command::new("ffmpeg")
++            .arg("-version")
++            .output()
++            .is_err()
++        {
++            eprintln!("skipping test: ffmpeg binary not installed");
++            return Ok(());
++        }
++
++        let dir = TempDir::new()?;
++        let video_path = dir.path().join("clip.mp4");
++        let status = std::process::Command::new("ffmpeg")
++            .args([
++                "-v",
++                "error",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=duration=2:size=64x48:rate=10",
++                "-c:v",
++                "libx264",
++                "-pix_fmt",
++                "yuv420p",
++                "-y",
++            ])
++            .arg(&video_path)
++            .status()?;
++        assert!(status.success(), "failed to generate test video");
++        fs::write(dir.path().join("notes.txt"), "notes")?;
++
++        // ranking the video ahead of the text file depends on `mime_for_path` recognizing it
++        // as video, same as image classification does (see `mime_sniffing_recognizes_images`)
++        let metadata = fs::metadata(&video_path)?;
++        if mime_for_path(&video_path, Some(&metadata), false).type_() != mime::VIDEO {
++            eprintln!(
++                "skipping test: environment's mime database doesn't recognize videos (e.g. sandboxed build)"
++            );
++            return Ok(());
++        }
++
++        // the extraction path folder samples rely on for video candidates should itself
++        // succeed on this fixture
++        assert!(
++            ItemThumbnail::video_middle_frame(&video_path).is_some(),
++            "expected the approximate-middle-frame extractor to succeed on the fixture"
++        );
++
++        match folder_item_thumbnail(dir.path()) {
++            ItemThumbnail::FolderSample(entries) => {
++                assert_eq!(entries.len(), 2, "expected both the video and the text file");
++                assert!(
++                    matches!(entries[0], FolderSampleEntry::Image(_)),
++                    "the video should be ranked first and represented by its extracted frame, got {:?}",
++                    entries[0]
++                );
++                assert!(matches!(entries[1], FolderSampleEntry::Icon(_)));
++            }
++            other => panic!("expected FolderSample, got {other:?}"),
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn visible_folder_paths_includes_only_intersecting_dirs() -> io::Result<()> {
++        let (_fs, mut tab) = tab_click_new(NUM_FILES, NUM_HIDDEN, NUM_DIRS, NUM_NESTED, NAME_LEN)?;
++        tab.size_opt.set(Some(Size::new(100.0, 100.0)));
++        tab.scroll_opt = None;
++
++        let items = tab.items_opt.as_mut().expect("tab should have items");
++        assert_eq!(items.len(), NUM_DIRS, "expected two top-level dir items");
++        items[0]
++            .rect_opt
++            .set(Some(Rectangle::new(Point::new(0.0, 0.0), Size::new(10.0, 10.0))));
++        items[1]
++            .rect_opt
++            .set(Some(Rectangle::new(Point::new(0.0, 500.0), Size::new(10.0, 10.0))));
++
++        let visible_path = items[0].path_opt().cloned().unwrap();
++        let offscreen_path = items[1].path_opt().cloned().unwrap();
++
++        let visible = tab.visible_folder_paths();
++        assert!(visible.contains(&visible_path));
++        assert!(!visible.contains(&offscreen_path));
++        Ok(())
++    }
++
++    #[test]
++    fn invalidate_folder_sample_for_child_clears_only_the_matching_folder_item() -> io::Result<()>
++    {
++        let (_fs, mut tab) = tab_click_new(NUM_FILES, NUM_HIDDEN, NUM_DIRS, NUM_NESTED, NAME_LEN)?;
++
++        {
++            let items = tab.items_opt.as_mut().expect("tab should have items");
++            for item in items.iter_mut() {
++                item.thumbnail_opt = Some(ItemThumbnail::NotImage);
++            }
++        }
++
++        let items = tab.items_opt.as_ref().unwrap();
++        let target_dir = items[0]
++            .path_opt()
++            .cloned()
++            .expect("dir item should have a path");
++        let other_dir = items[1]
++            .path_opt()
++            .cloned()
++            .expect("dir item should have a path");
++        // `simple_fs` populates every directory with plain files named "0", "1", ...
++        let grandchild = target_dir.join("0");
++
++        assert!(
++            tab.invalidate_folder_sample_for_child(&grandchild),
++            "a direct child of a tracked folder item should be recognized"
++        );
++
++        let items = tab.items_opt.as_ref().unwrap();
++        let target_item = items
++            .iter()
++            .find(|i| i.path_opt() == Some(&target_dir))
++            .unwrap();
++        let other_item = items
++            .iter()
++            .find(|i| i.path_opt() == Some(&other_dir))
++            .unwrap();
++        assert!(
++            target_item.thumbnail_opt.is_none(),
++            "the folder whose child changed should be invalidated"
++        );
++        assert!(
++            other_item.thumbnail_opt.is_some(),
++            "unrelated folders should be left alone"
++        );
++
++        Ok(())
++    }
++
++    #[test]
++    fn invalidate_folder_sample_for_child_is_noop_for_untracked_paths() -> io::Result<()> {
++        let (_fs, mut tab) = tab_click_new(NUM_FILES, NUM_HIDDEN, NUM_DIRS, NUM_NESTED, NAME_LEN)?;
++        let tab_dir = tab
++            .location
++            .path_opt()
++            .cloned()
++            .expect("tab should have a path");
++
++        // a change directly in the tab's own directory has no matching folder item (items are
++        // its children, not the directory itself); callers fall through to their normal
++        // handling (metadata patch or full tab reload) instead of a folder-sample invalidation
++        assert!(!tab.invalidate_folder_sample_for_child(&tab_dir.join("new_file.txt")));
++
++        // a folder that scrolled off (or is otherwise no longer tracked) shouldn't panic
++        assert!(
++            !tab.invalidate_folder_sample_for_child(&tab_dir.join("ghost_dir").join("child"))
++        );
++
++        Ok(())
++    }
+ }
+-- 
+2.55.0
+

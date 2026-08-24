@@ -1,17 +1,17 @@
-From 0de9822a06f75599c7cdf4bf5997c95d501109c6 Mon Sep 17 00:00:00 2001
+From 9cc187531007fcdc4323608b9f8b7104a6ceda8c Mon Sep 17 00:00:00 2001
 From: Jonathan M <jgit@tuta.io>
 Date: Sat, 22 Aug 2026 17:19:14 -0700
-Subject: [PATCH 4/4] app: enable mouse scrolling through tabs
+Subject: [PATCH 3/3] app: enable mouse scrolling through tabs
 
 ---
- src/app.rs | 79 ++++++++++++++++++++++++++++++++++++++++++++----------
- 1 file changed, 65 insertions(+), 14 deletions(-)
+ src/app.rs | 83 +++++++++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 67 insertions(+), 16 deletions(-)
 
 diff --git a/src/app.rs b/src/app.rs
-index afc22f4..0ffdada 100644
+index 5feb7f6..1b29fc9 100644
 --- a/src/app.rs
 +++ b/src/app.rs
-@@ -486,6 +486,33 @@ pub enum Message {
+@@ -488,6 +488,33 @@ pub enum Message {
      CutPaths(Vec<PathBuf>),
  }
  
@@ -45,7 +45,7 @@ index afc22f4..0ffdada 100644
  #[derive(Clone, Debug, Eq, PartialEq)]
  pub enum ContextPage {
      About,
-@@ -6532,20 +6559,23 @@ impl Application for App {
+@@ -6602,20 +6629,23 @@ impl Application for App {
          if self.tab_model.len() > 1 {
              tab_column = tab_column.push(
                  widget::container(
@@ -83,10 +83,11 @@ index afc22f4..0ffdada 100644
                  )
                  .width(Length::Fill)
                  .padding([0, space_s]),
-@@ -7118,6 +7148,27 @@ impl Application for App {
- // Utilities to build a temporary file hierarchy for tests.
- //
- // Ideally, tests would use the cap-std crate which limits path traversal.
+@@ -7185,9 +7215,30 @@ impl Application for App {
+     }
+ }
+ 
+-// Utilities to build a temporary file hierarchy for tests.
 +#[cfg(test)]
 +mod wheel_tests {
 +    use super::*;
@@ -108,6 +109,10 @@ index afc22f4..0ffdada 100644
 +    }
 +}
 +
++// utilities to build a temporary file hierarchy for tests
+ //
+-// Ideally, tests would use the cap-std crate which limits path traversal.
++// ideally, tests would use the cap-std crate which limits path traversal
  #[cfg(test)]
  pub(crate) mod test_utils {
      use std::cmp::Ordering;

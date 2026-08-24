@@ -6,6 +6,7 @@ There's a certified slop™[^1] patch set for `cosmic-files` 1.5 / 1.6 [here](./
 
 * Enable thumbnail generation for remote drives.
 * Add static video thumbnail generation, and animated thumbnail generation for the grid view.
+* Add 3-way thumbnails for folders to preview its content. Media files are prioritized first, and looked for 3 layers deep.
 * Add mouse wheel scrolling through opened tabs.
 
 You can apply all of the patches in your own overlay like so:
@@ -18,12 +19,10 @@ cosmic-files = super.cosmic-files.overrideAttrs (oldAttrs:
       ./patches/cosmic-files/0001-tab-enable-thumbnails-for-remote-drives.patch
 
       # can be applied independently
-      ./patches/cosmic-files/0002-tab-video-thumbnails.patch
-      # requires the above patch
-      ./patches/cosmic-files/0003-tab-rotating-video-thumbnails.patch
+      ./patches/cosmic-files/0002-tab-video-thumbnails-3-way-folder-previews.patch
 
       # can be applied independently
-      ./patches/cosmic-files/0004-app-enable-mouse-scrolling-through-tabs.patch
+      ./patches/cosmic-files/0003-app-enable-mouse-scrolling-through-tabs.patch
     ];
   in
   {
